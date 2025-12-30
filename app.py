@@ -75,7 +75,9 @@ def ask_ai(question):
 
     try:
         # 정보가 많으므로 temperature를 0으로 설정하여 팩트 위주 답변
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+        # 수정: 모델명을 'gemini-1.5-flash-latest'로 변경하여 인식 오류 해결 시도
+        # 만약 여전히 안 된다면 'gemini-pro'로 변경해보세요.
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0)
         
         template = """
         너는 광운대학교 학사 전문 상담 비서 'KW-강의마스터'야.

@@ -17,24 +17,20 @@ api_key = os.environ.get("GOOGLE_API_KEY", "")
 def load_knowledge_base():
     all_content = ""
     
-    # 'data' 폴더가 없으면 생성 (에러 방지용)
     if not os.path.exists("data"):
         os.makedirs("data")
         return ""
 
-    # data 폴더 안의 모든 .pdf 파일 찾기
     pdf_files = glob.glob("data/*.pdf")
     
     if not pdf_files:
         return ""
 
-    # 각 PDF 파일을 순서대로 읽어서 텍스트 합치기
     for pdf_file in pdf_files:
         try:
             loader = PyPDFLoader(pdf_file)
             pages = loader.load_and_split()
             
-            # 파일명을 헤더로 추가해서 AI가 출처를 알게 함
             filename = os.path.basename(pdf_file)
             all_content += f"\n\n--- [문서 시작: {filename}] ---\n"
             
@@ -47,41 +43,34 @@ def load_knowledge_base():
             
     return all_content
 
-# 앱 시작 시 한 번만 실행되어 모든 PDF를 메모리에 올림
 PRE_LEARNED_DATA = load_knowledge_base()
 
 # -----------------------------------------------------------------------------
-# [2] AI 엔진 (질의응답 & 시간표 생성)
+# [2] AI 엔진 (질의응답 & 고도화된 시간표 생성)
 # -----------------------------------------------------------------------------
 def get_llm():
-    """모델 인스턴스 반환 (공통 사용)"""
     if not api_key:
         return None
-    # 404 오류 방지를 위한 현재 환경 지원 모델
+    # 404 오류 방지 및 최신 모델 사용
     return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
 
 def ask_ai(question):
     llm = get_llm()
-    if not llm:
-        return "⚠️ 서버에 API Key가 설정되지 않았습니다."
-    
-    if not PRE_LEARNED_DATA: 
-        return "⚠️ 학습된 데이터가 없습니다. VS Code의 'data' 폴더에 PDF 파일을 넣어주세요."
+    if not llm: return "⚠️ 서버에 API Key가 설정되지 않았습니다."
+    if not PRE_LEARNED_DATA: return "⚠️ 학습된 데이터가 없습니다."
 
     try:
         template = """
         너는 광운대학교 학사 전문 상담 비서 'KW-강의마스터'야.
-        너는 아래 제공된 [학습된 PDF 문서들]의 내용을 완벽하게 숙지하고 있어.
-        
         [지시사항]
-        1. 질문에 대한 답변은 오직 제공된 문서 내용에 기반해서 작성해.
-        2. 답변할 때 "참고한 문서의 이름(예: 장학금규정.pdf)"을 언급해주면 더 좋아.
-        3. 문서에 없는 내용은 솔직하게 모른다고 답해.
+        1. 질문에 대한 답변은 오직 제공된 [학습된 PDF 문서들] 내용에 기반해서 작성해.
+        2. 출처(문서명)를 언급해줘.
+        3. 모르는 내용은 모른다고 답해.
 
         [학습된 PDF 문서들]
         {context}
 
-        [학생의 질문]
+        [질문]
         {question}
         """
         prompt = PromptTemplate(template=template, input_variables=["context", "question"])
@@ -91,43 +80,56 @@ def ask_ai(question):
     except Exception as e:
         return f"❌ AI 오류: {str(e)}"
 
-def generate_timetable_ai(grade, target_credits, free_days, requirements):
+def generate_timetable_ai(major, grade, semester, target_credits, free_days, requirements):
     llm = get_llm()
-    if not llm:
-        return "⚠️ 서버에 API Key가 설정되지 않았습니다."
-    
-    if not PRE_LEARNED_DATA: 
-        return "⚠️ 학습된 데이터가 없습니다. 데이터가 없으면 시간표를 짤 수 없습니다."
+    if not llm: return "⚠️ 서버에 API Key가 설정되지 않았습니다."
+    if not PRE_LEARNED_DATA: return "⚠️ 학습된 데이터가 없습니다."
 
     try:
-        # 시간표 생성 전용 프롬프트
+        # 시간표 생성 전용 고도화 프롬프트
         template = """
-        너는 대학교 수강신청 전문가야. 
-        제공된 [학습된 PDF 문서들]에 포함된 '강의 시간표'와 '커리큘럼' 정보를 바탕으로 학생에게 최적화된 시간표를 짜줘.
+        너는 대학교 수강신청 및 커리큘럼 전문가야. 
+        제공된 [학습된 PDF 문서들](학사요람, 강의시간표 등)을 철저히 분석하여 학생에게 최적화된 시간표를 작성해줘.
 
-        [학생 요구사항]
-        - 학년: {grade}
-        - 목표 학점: {target_credits}학점 내외
-        - 공강 희망 요일(수업 없음): {free_days} (이 요일에는 절대 수업을 넣지 마)
-        - 기타 요구사항: {requirements}
+        [학생 정보]
+        - 소속 학과: {major}
+        - 학년/학기: {grade} {semester}
+        - 목표 학점: {target_credits}학점
+        - 공강 희망 요일: {free_days} (이 요일 수업 배제)
+        - 추가 요구사항: {requirements}
 
-        [지시사항]
-        1. PDF 문서 내에 있는 **실제 개설 과목**과 **수업 시간** 정보를 찾아서 배치해.
-        2. 수업 시간이 겹치지 않게 배치해야 해.
-        3. 학년과 전공 필수/선택 구분을 고려해서 추천해줘.
-        4. 만약 PDF에 구체적인 '요일/교시' 정보가 없다면, 대략적인 커리큘럼 위주로 추천하고 "시간 정보가 문서에 없어 임의 배정했습니다"라고 명시해.
-        5. 결과는 **가독성 좋은 마크다운 표**로 출력해줘. (요일별, 교시별 정리)
-        6. 마지막에 왜 이 시간표를 추천했는지, 수강신청 유의사항(선수과목 등)이 있다면 같이 설명해줘.
+        [필수 지시사항 - 단계별로 생각할 것]
+        1. **필수 과목 식별**: {major} {grade}학년 {semester} 커리큘럼상 **반드시 들어야 하는 과목(전공필수, 교양필수, 학문기초 등)**을 PDF에서 찾아내라. 
+           (예: 1학년 1학기라면 대학수학, 대학물리, 프로그래밍 기초 등)
+        2. **선택적 필수 고려**: "1학년 중 택1" 또는 "1학기/2학기 중 선택 수강"인 과목(예: 공학설계입문)은 현재 학점 상황과 시간표 밸런스를 고려해 넣을지 말지 결정해라.
+        3. **선수 과목 체크**: 해당 학년에 듣기에 부적절하거나 선수과목이 필요한 수업인지 확인해라.
+        4. **시간표 배치**: 
+           - 필수 과목을 최우선으로 배치한다.
+           - 남는 학점은 전공선택이나 균형교양으로 채운다.
+           - 실제 PDF에 있는 '강의 시간'과 '교수님 성함'을 매칭한다.
+           - 공강 희망 요일을 최대한 지킨다.
+        
+        [출력 형식 - 에브리타임 스타일]
+        1. 결과는 반드시 **마크다운 표(Table)**로 작성한다.
+           - 열: 시간, 월, 화, 수, 목, 금
+           - 행: 1교시(09:00) ~ 9교시(17:00)
+        2. 셀 내용: **과목명<br>(교수명)** (HTML 줄바꿈 태그 사용)
+        3. 표 아래에 **"상세 분석 리포트"**를 작성해라.
+           - **필수 과목 포함 여부**: 왜 이 과목들을 넣었는지(커리큘럼 근거).
+           - **학점 구성**: 전공 O학점, 교양 O학점.
+           - **주의사항**: 선수과목 경고나 수강신청 팁.
 
         [학습된 PDF 문서들]
         {context}
         """
-        prompt = PromptTemplate(template=template, input_variables=["context", "grade", "target_credits", "free_days", "requirements"])
+        prompt = PromptTemplate(template=template, input_variables=["context", "major", "grade", "semester", "target_credits", "free_days", "requirements"])
         chain = prompt | llm
         
         input_data = {
             "context": PRE_LEARNED_DATA,
+            "major": major,
             "grade": grade,
+            "semester": semester,
             "target_credits": target_credits,
             "free_days": ", ".join(free_days) if free_days else "없음",
             "requirements": requirements if requirements else "없음"
@@ -142,18 +144,17 @@ def generate_timetable_ai(grade, target_credits, free_days, requirements):
 # [3] UI 구성
 # -----------------------------------------------------------------------------
 st.sidebar.title("🎓 KW-강의마스터")
-# glob 모듈이 없는 경우 대비
 try:
     pdf_count = len(glob.glob("data/*.pdf"))
 except:
     pdf_count = 0
-st.sidebar.info(f"📚 현재 {pdf_count}개의 문서를 학습했습니다.")
+st.sidebar.info(f"📚 학습된 문서: {pdf_count}개")
 
 menu = st.sidebar.radio("메뉴", ["AI 학사 지식인", "이수학점 진단", "스마트 시간표"])
 
 if menu == "AI 학사 지식인":
     st.header("🤖 AI 학사 지식인")
-    st.caption("업로드된 PDF 문서들을 기반으로 답변합니다.")
+    st.caption("궁금한 학사 규정이나 커리큘럼을 물어보세요.")
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -162,43 +163,49 @@ if menu == "AI 학사 지식인":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if user_input := st.chat_input("질문하세요 (예: 이번 학기 장학금 기준이 뭐야?)"):
+    if user_input := st.chat_input("질문 입력 (예: 전자융합공학과 졸업 요건이 뭐야?)"):
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("문서를 검색 중입니다..."):
+            with st.spinner("문서를 분석 중입니다..."):
                 answer = ask_ai(user_input)
                 st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
 
 elif menu == "이수학점 진단":
-    st.header("📊 졸업 이수 현황")
+    st.header("📊 졸업 이수 현황 (간편)")
     col1, col2 = st.columns(2)
     with col1:
-        major = st.number_input("전공 이수 학점", 0, 130, 45)
-        ge = st.number_input("교양 이수 학점", 0, 130, 20)
+        major_score = st.number_input("전공 이수 학점", 0, 150, 45)
+        ge_score = st.number_input("교양 이수 학점", 0, 150, 20)
     with col2:
-        total = major + ge
-        st.metric("현재 총 이수", f"{total} / 130")
-        st.progress(total/130)
+        total = major_score + ge_score
+        st.metric("총 이수 학점", f"{total} / 130")
+        st.progress(min(total/130, 1.0))
 
 elif menu == "스마트 시간표":
-    st.header("📅 AI 맞춤형 시간표 생성")
-    st.info("업로드된 강의 시간표 PDF 파일을 기반으로 공강을 고려한 최적의 시간표를 생성합니다.")
+    st.header("📅 AI 맞춤형 시간표 설계")
+    st.info("학과 요람과 강의 시간표 PDF를 분석하여, 필수 과목을 포함한 최적의 시간표를 제안합니다.")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        grade_input = st.selectbox("학년 선택", ["1학년", "2학년", "3학년", "4학년"])
-        target_credit = st.number_input("목표 학점", 9, 24, 18)
-    with col2:
-        # 공강 요일 다중 선택
-        free_days = st.multiselect("희망 공강 요일 (수업 제외)", ["월", "화", "수", "목", "금"])
-        requirements = st.text_input("추가 요구사항 (예: 전공 필수 위주로, 오전 수업 제외 등)")
+    # 입력 폼 고도화
+    with st.form("timetable_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            major_input = st.text_input("소속 학과 (정확히 입력)", value="전자융합공학과")
+            grade_input = st.selectbox("학년", ["1학년", "2학년", "3학년", "4학년"])
+            semester_input = st.selectbox("학기", ["1학기", "2학기"])
+        
+        with col2:
+            target_credit = st.number_input("목표 학점", 9, 24, 19)
+            free_days = st.multiselect("공강 희망 요일", ["월", "화", "수", "목", "금"])
+            requirements = st.text_input("추가 요구사항 (예: 오전 수업 선호, 영어강의 제외 등)")
+        
+        submitted = st.form_submit_button("시간표 생성하기 ✨")
 
-    if st.button("시간표 생성하기 ✨"):
-        with st.spinner("강의 시간표 PDF를 분석하여 최적의 조합을 찾는 중입니다..."):
-            result = generate_timetable_ai(grade_input, target_credit, free_days, requirements)
+    if submitted:
+        with st.spinner(f"{major_input} {grade_input} {semester_input} 커리큘럼 분석 및 시간표 생성 중..."):
+            result = generate_timetable_ai(major_input, grade_input, semester_input, target_credit, free_days, requirements)
             st.markdown("### 🗓️ 추천 시간표")
-            st.markdown(result)
+            st.markdown(result, unsafe_allow_html=True)

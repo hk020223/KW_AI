@@ -48,29 +48,24 @@ def clean_html_output(text):
     
     return cleaned.strip()
 
-# PDF 데이터 로드 (캐시 파일 우선 사용으로 속도 향상)
-@st.cache_resource(show_spinner="학사 데이터를 분석 중입니다...")
+# PDF 데이터 로드 (직접 읽기 모드 복구)
+@st.cache_resource(show_spinner="PDF 문서를 분석 중입니다...")
 def load_knowledge_base():
     # 1. data 폴더 확인
     if not os.path.exists("data"):
         return ""
     
-    cache_path = "data/cached_knowledge.txt"
-
-    # 2. 미리 학습된(변환된) 텍스트 파일이 있으면 그걸 읽어서 바로 반환
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                return f.read()
-        except:
-            pass # 읽기 실패 시 아래 PDF 파싱으로 넘어감
-
-    # 3. 캐시가 없으면 PDF 파일들을 읽어서 분석
-    all_content = ""
+    # 캐시 파일(txt) 로직 제거: 무조건 PDF 파일을 새로 읽도록 수정
+    
+    # 2. PDF 파일 목록 확인
     pdf_files = glob.glob("data/*.pdf")
     if not pdf_files:
         return ""
         
+    all_content = ""
+    loaded_files = []
+    
+    # 3. PDF 파일 순회하며 텍스트 추출
     for pdf_file in pdf_files:
         try:
             loader = PyPDFLoader(pdf_file)
@@ -79,14 +74,13 @@ def load_knowledge_base():
             all_content += f"\n\n--- [문서: {filename}] ---\n"
             for page in pages:
                 all_content += page.page_content
-        except: continue
+            loaded_files.append(filename)
+        except Exception as e:
+            print(f"Error loading {pdf_file}: {e}")
+            continue
     
-    # 4. 분석된 내용을 다음을 위해 파일로 저장 (미리 학습)
-    try:
-        with open(cache_path, "w", encoding="utf-8") as f:
-            f.write(all_content)
-    except:
-        pass
+    # 디버깅용: 로드된 파일 목록을 로그에 남기거나 할 수 있음
+    print(f"Loaded PDFs: {loaded_files}")
     
     return all_content
 
@@ -116,7 +110,7 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
     if not llm: return "⚠️ API Key 오류"
     
     template = """
-    너는 대학교 수강신청 전문가야. PDF 문서(시간표, 요람, 커리큘럼)를 분석해서 최적의 시간표를 짜줘.
+    너는 대학교 수강신청 전문가야. 오직 제공된 [학습된 문서]의 텍스트 데이터에 기반해서만 시간표를 짜줘.
 
     [학생 정보]
     - 소속: {major}
@@ -125,31 +119,30 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
     - 공강 필수 시간: {blocked_times} (이 시간은 수업 배치 절대 금지)
     - 추가요구: {requirements}
 
-    [필수 지시사항 - 매우 중요]
-    1. **해당 학과/학년/학기의 필수 커리큘럼 준수 (자동 분석)**:
-       - 제공된 PDF 문서(요람, 커리큘럼표 등)에서 **'{major} {grade} {semester}'에 해당하는 표준 이수 과목**을 찾으세요.
-       - **전공필수(전필), 기초교양(대학수학, 물리, 화학, 프로그래밍 등), 필수선택(학문기초)** 등 커리큘럼상 **이 시기에 꼭 들어야 한다고 명시된 과목**은 무조건 시간표에 포함시키세요.
-       - 문서에 나온 **트랙/이수체계도**를 참고하여, 다음 학기나 내년에 수업을 듣기 위해 이번에 꼭 들어야 하는 **선수 과목**을 누락하지 마세요.
+    [엄격한 제약사항 - 위반 시 오답 처리]
+    1. **사실 기반 생성 (Hallucination 방지)**:
+       - **절대로** 문서에 없는 강의 시간이나 교수명을 창조(임의 배정)하지 마세요.
+       - 문서 텍스트에서 '과목명', '교수명', '요일/교시'가 명확히 매칭되는 경우에만 시간표에 넣으세요.
+       - 만약 필수 과목인데 시간표 데이터(요일/교시)를 문서에서 찾을 수 없다면, **절대로 시간표 표(Table) 안에 임의로 넣지 마세요.**
+       - 대신, **표 아래에** "⚠️ [과목명]: 시간 정보를 문서에서 찾을 수 없어 배치하지 못했습니다."라고 따로 명시하세요.
 
-    2. **실제 개설 정보 반영 (시간 및 교수명)**:
-       - PDF 문서 내의 시간표 데이터에서 해당 과목이 **실제로 개설된 요일과 교시**를 정확히 찾아 배치하세요. (임의 배정 금지)
-       - 해당 과목의 **실제 담당 교수님 성함**을 반드시 찾아 적으세요. ('미정'이나 빈칸 금지)
+    2. **필수 커리큘럼 준수**:
+       - 제공된 문서(요람 등)를 분석하여 '{major} {grade} {semester}'에 꼭 들어야 하는 필수 과목(전필, 기초교양 등)을 파악하세요.
+       - 시간 정보가 확인된 필수 과목은 우선적으로 배치하세요.
 
     3. **출력 형식 (세로형 HTML Table)**:
        - 반드시 **HTML `<table>` 태그**를 사용해라.
-       - **행(Row): 1교시 ~ 9교시 (세로축이 시간)**
+       - **행(Row): 1교시 ~ 9교시**
        - **열(Column): 월, 화, 수, 목, 금, 토, 일** (7일 모두 표시)
-       - **토요일, 일요일에 수업이 없더라도 열을 포함시켜라.**
        - 각 수업 셀마다 **서로 다른 파스텔톤 배경색**(`style="background-color: #..."`)을 적용해라.
        - 셀 내용: `<b>과목명</b><br><small>교수명</small>`
        - 빈 시간(공강)은 비워둬라.
-       - 표는 시각적으로 깔끔하게 만들어라.
     
     4. **출력 순서 및 형식 (Clean Output)**:
        - **반드시 시간표 HTML 표를 가장 먼저 출력해라.**
        - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** 그냥 Raw HTML 텍스트로 출력해라.
        - 시간표 표 위에 어떤 텍스트도 적지 마라.
-       - **표 아래에** 과목 선정 이유를 작성해라. 특히 **"왜 이 과목을 필수로 넣었는지"**에 대해 커리큘럼상 근거(예: "요람에 2학년 1학기 전공필수로 지정됨", "캡스톤디자인 수강을 위한 선수과목임")를 명시해라.
+       - **표 아래에** 과목 선정 이유와, **시간을 찾지 못해 배치하지 못한 필수 과목 목록**을 반드시 작성해라.
 
     [학습된 문서]
     {context}
@@ -187,6 +180,7 @@ def chat_with_timetable_ai(current_timetable, user_input):
     - 시간표를 **재작성(HTML Table 형식 유지 - 세로형, 월~일 7일 표시)**해줘.
     - **반드시 수정된 시간표(HTML Table)를 가장 먼저 출력**하고, 그 뒤에 무엇이 바뀌었는지 짧게 설명해.
     - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** Raw HTML로 출력해.
+    - 수정 시에도 **없는 정보를 지어내지 않도록** 주의해.
     
     **Case 2. 과목에 대한 단순 질문인 경우 (예: "이거 선수과목 뭐야?"):**
     - **시간표를 다시 출력하지 말고**, 질문에 대한 **텍스트 답변**만 해.
@@ -233,8 +227,10 @@ with st.sidebar:
                         st.rerun()
 
     st.divider()
-    # 학습 상태 표시는 최소화 (데이터 로드 여부만 조용히 체크)
-    if not PRE_LEARNED_DATA:
+    # 학습 상태 표시
+    if PRE_LEARNED_DATA:
+         st.success(f"✅ PDF 문서 학습 완료")
+    else:
         st.error("⚠️ 데이터 폴더에 PDF 파일이 없습니다.")
 
 menu = st.radio("기능 선택", ["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)"], 

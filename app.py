@@ -34,6 +34,20 @@ def add_log(role, content, menu_context=None):
         "menu": menu_context
     })
 
+# HTML 코드 정제 함수 (AI가 마크다운으로 감싸는 것 방지)
+def clean_html_output(text):
+    """AI가 뱉은 텍스트에서 ```html 태그 제거"""
+    cleaned = text.strip()
+    if cleaned.startswith("```html"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    
+    return cleaned.strip()
+
 # PDF 데이터 로드 (캐시 파일 우선 사용으로 속도 향상)
 @st.cache_resource(show_spinner="학사 데이터를 분석 중입니다...")
 def load_knowledge_base():
@@ -102,24 +116,24 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
     if not llm: return "⚠️ API Key 오류"
     
     template = """
-    너는 대학교 수강신청 전문가야. PDF 문서(시간표, 요람)를 분석해서 최적의 시간표를 짜줘.
+    너는 대학교 수강신청 전문가야. PDF 문서(시간표, 요람, 커리큘럼)를 분석해서 최적의 시간표를 짜줘.
 
     [학생 정보]
-    - {major} {grade} {semester}
+    - 소속: {major}
+    - 학년/학기: {grade} {semester}
     - 목표: {target_credits}학점
     - 공강 필수 시간: {blocked_times} (이 시간은 수업 배치 절대 금지)
     - 추가요구: {requirements}
 
     [필수 지시사항 - 매우 중요]
-    1. **1학년 기초 필수 과목 우선 배정 (최우선 순위)**:
-       - {grade}이 '1학년'이고 {semester}가 '1학기'라면, 다음 과목들은 커리큘럼상 **반드시** 포함해야 합니다:
-         **'대학수학및연습1', '대학물리학1', '대학화학및실험1', 'C프로그래밍'**
-       - 위 과목들을 먼저 시간표에 배치하고, 남는 학점은 '광운인성', '대학영어' 또는 '균형교양' 등으로 채우세요.
-       - 만약 2학기라면 '대학수학및연습2', '대학물리및실험2' 등이 필수가 됩니다.
+    1. **해당 학과/학년/학기의 필수 커리큘럼 준수 (자동 분석)**:
+       - 제공된 PDF 문서(요람, 커리큘럼표 등)에서 **'{major} {grade} {semester}'에 해당하는 표준 이수 과목**을 찾으세요.
+       - **전공필수(전필), 기초교양(대학수학, 물리, 화학, 프로그래밍 등), 필수선택(학문기초)** 등 커리큘럼상 **이 시기에 꼭 들어야 한다고 명시된 과목**은 무조건 시간표에 포함시키세요.
+       - 문서에 나온 **트랙/이수체계도**를 참고하여, 다음 학기나 내년에 수업을 듣기 위해 이번에 꼭 들어야 하는 **선수 과목**을 누락하지 마세요.
 
     2. **실제 교수님 성함 기재 (필수)**:
        - PDF 문서 내의 시간표 데이터에서 해당 과목의 **실제 담당 교수님 성함**을 반드시 찾아 적으세요.
-       - '미정'이나 빈칸으로 두지 말고, 분반이 여러 개라면 시간이 맞는 분반의 실제 교수님 이름을 선택해서 넣으세요.
+       - '미정'이나 빈칸으로 두지 말고, 실제 개설된 분반 중 하나를 선택해서 넣으세요.
 
     3. **출력 형식 (세로형 HTML Table)**:
        - 반드시 **HTML `<table>` 태그**를 사용해라.
@@ -130,10 +144,11 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
        - 빈 시간(공강)은 비워둬라.
        - 표는 시각적으로 깔끔하게 만들어라.
     
-    4. **출력 순서**:
+    4. **출력 순서 및 형식 (Clean Output)**:
        - **반드시 시간표 HTML 표를 가장 먼저 출력해라.**
+       - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** 그냥 Raw HTML 텍스트로 출력해라.
        - 시간표 표 위에 어떤 텍스트도 적지 마라.
-       - **표 아래에** 과목 선정 이유(특히 필수 과목 포함 여부)와 선수과목 설명을 작성해라.
+       - **표 아래에** 과목 선정 이유를 작성해라. 특히 **"왜 이 과목을 필수로 넣었는지"**에 대해 커리큘럼상 근거(예: "요람에 2학년 1학기 전공필수로 지정됨", "캡스톤디자인 수강을 위한 선수과목임")를 명시해라.
 
     [학습된 문서]
     {context}
@@ -149,7 +164,9 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
         "blocked_times": blocked_times_desc,
         "requirements": requirements
     }
-    return chain.invoke(input_data).content
+    # 결과 정제 (마크다운 코드 블록 제거)
+    response_content = chain.invoke(input_data).content
+    return clean_html_output(response_content)
 
 def chat_with_timetable_ai(current_timetable, user_input):
     llm = get_llm()
@@ -168,6 +185,7 @@ def chat_with_timetable_ai(current_timetable, user_input):
     **Case 1. 시간표 수정 요청인 경우 (예: "1교시 빼줘", "교수 바꿔줘"):**
     - 시간표를 **재작성(HTML Table 형식 유지 - 세로형)**해줘.
     - **반드시 수정된 시간표(HTML Table)를 가장 먼저 출력**하고, 그 뒤에 무엇이 바뀌었는지 짧게 설명해.
+    - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** Raw HTML로 출력해.
     
     **Case 2. 과목에 대한 단순 질문인 경우 (예: "이거 선수과목 뭐야?"):**
     - **시간표를 다시 출력하지 말고**, 질문에 대한 **텍스트 답변**만 해.
@@ -178,7 +196,18 @@ def chat_with_timetable_ai(current_timetable, user_input):
     """
     prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input"])
     chain = prompt | llm
-    return chain.invoke({"current_timetable": current_timetable, "user_input": user_input}).content
+    
+    response_content = chain.invoke({"current_timetable": current_timetable, "user_input": user_input}).content
+    
+    if "[수정]" in response_content:
+        # 태그와 내용 분리 후 HTML 정제
+        parts = response_content.split("[수정]", 1)
+        if len(parts) > 1:
+            return "[수정]" + clean_html_output(parts[1])
+        else:
+            return clean_html_output(response_content)
+            
+    return response_content
 
 # -----------------------------------------------------------------------------
 # [2] UI 구성
@@ -313,6 +342,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                     response = chat_with_timetable_ai(st.session_state.timetable_result, chat_input)
                     if "[수정]" in response:
                         new_timetable = response.replace("[수정]", "").strip()
+                        new_timetable = clean_html_output(new_timetable) # 한번 더 확실하게 정제
                         st.session_state.timetable_result = new_timetable
                         st.markdown(new_timetable, unsafe_allow_html=True)
                         st.session_state.timetable_chat_history.append({"role": "assistant", "content": "시간표를 수정했습니다. 위쪽 표를 확인해주세요."})

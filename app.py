@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import glob
 import datetime
+import time
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
@@ -34,38 +35,46 @@ def add_log(role, content, menu_context=None):
         "menu": menu_context
     })
 
-# HTML 코드 정제 함수 (AI가 마크다운으로 감싸는 것 방지)
+# HTML 코드 정제 함수
 def clean_html_output(text):
-    """AI가 뱉은 텍스트에서 ```html 태그 제거"""
     cleaned = text.strip()
     if cleaned.startswith("```html"):
         cleaned = cleaned[7:]
     elif cleaned.startswith("```"):
         cleaned = cleaned[3:]
-    
     if cleaned.endswith("```"):
         cleaned = cleaned[:-3]
-    
     return cleaned.strip()
 
-# PDF 데이터 로드 (직접 읽기 모드 복구)
+# ★ 재시도(Retry) 로직 ★
+def run_with_retry(func, *args, **kwargs):
+    """API 호출 실패 시 지수 백오프로 재시도"""
+    max_retries = 5
+    delays = [1, 2, 4, 8, 16]
+    
+    for i in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                if i < max_retries - 1:
+                    wait_time = delays[i]
+                    time.sleep(wait_time) 
+                    continue
+            raise e
+
+# PDF 데이터 로드
 @st.cache_resource(show_spinner="PDF 문서를 분석 중입니다...")
 def load_knowledge_base():
-    # 1. data 폴더 확인
     if not os.path.exists("data"):
         return ""
     
-    # 캐시 파일(txt) 로직 제거: 무조건 PDF 파일을 새로 읽도록 수정
-    
-    # 2. PDF 파일 목록 확인
     pdf_files = glob.glob("data/*.pdf")
     if not pdf_files:
         return ""
         
     all_content = ""
-    loaded_files = []
-    
-    # 3. PDF 파일 순회하며 텍스트 추출
     for pdf_file in pdf_files:
         try:
             loader = PyPDFLoader(pdf_file)
@@ -74,13 +83,9 @@ def load_knowledge_base():
             all_content += f"\n\n--- [문서: {filename}] ---\n"
             for page in pages:
                 all_content += page.page_content
-            loaded_files.append(filename)
         except Exception as e:
             print(f"Error loading {pdf_file}: {e}")
             continue
-    
-    # 디버깅용: 로드된 파일 목록을 로그에 남기거나 할 수 있음
-    print(f"Loaded PDFs: {loaded_files}")
     
     return all_content
 
@@ -96,113 +101,138 @@ def get_llm():
 def ask_ai(question):
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
-    try:
-        # 원문 인용 요청 추가
+    
+    def _execute():
         chain = PromptTemplate.from_template(
             "문서 내용: {context}\n질문: {question}\n문서에 기반해 답변해줘. 답변할 때 근거가 되는 문서의 원문 내용을 반드시 \" \" (쌍따옴표) 안에 인용해서 포함해줘."
         ) | llm
         return chain.invoke({"context": PRE_LEARNED_DATA, "question": question}).content
-    except Exception as e: return str(e)
 
-# 시간표 생성 함수 (HTML 컬러 테이블 + 세로형 + 선수과목 강조)
+    try:
+        return run_with_retry(_execute)
+    except Exception as e:
+        if "RESOURCE_EXHAUSTED" in str(e):
+            return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
+        return f"❌ AI 오류: {str(e)}"
+
+# 시간표 생성 함수 (강화된 프롬프트 적용)
 def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_desc, requirements):
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
     
-    template = """
-    너는 대학교 수강신청 전문가야. 오직 제공된 [학습된 문서]의 텍스트 데이터에 기반해서만 시간표를 짜줘.
+    def _execute():
+        template = """
+        너는 대학교 수강신청 전문가야. 오직 제공된 [학습된 문서]의 텍스트 데이터에 기반해서만 시간표를 짜줘.
 
-    [학생 정보]
-    - 소속: {major}
-    - 학년/학기: {grade} {semester}
-    - 목표: {target_credits}학점
-    - 공강 필수 시간: {blocked_times} (이 시간은 수업 배치 절대 금지)
-    - 추가요구: {requirements}
+        [학생 정보]
+        - 소속: {major}
+        - 학년/학기: {grade} {semester}
+        - 목표: {target_credits}학점
+        - 공강 필수 시간: {blocked_times} (이 시간은 수업 배치 절대 금지)
+        - 추가요구: {requirements}
 
-    [엄격한 제약사항 - 위반 시 오답 처리]
-    1. **사실 기반 생성 (Hallucination 방지)**:
-       - **절대로** 문서에 없는 강의 시간이나 교수명을 창조(임의 배정)하지 마세요.
-       - 문서 텍스트에서 '과목명', '교수명', '요일/교시'가 명확히 매칭되는 경우에만 시간표에 넣으세요.
-       - 만약 필수 과목인데 시간표 데이터(요일/교시)를 문서에서 찾을 수 없다면, **절대로 시간표 표(Table) 안에 임의로 넣지 마세요.**
-       - 대신, **표 아래에** "⚠️ [과목명]: 시간 정보를 문서에서 찾을 수 없어 배치하지 못했습니다."라고 따로 명시하세요.
+        [★★★ 초강력 데이터 검증 규칙 - 위반 시 치명적 오류로 간주 ★★★]
+        
+        1. **교과목명 100% 일치 필수 (유사어 금지)**:
+           - 요람(Curriculum)에 적힌 과목명과 시간표(Schedule)에 적힌 과목명이 **글자 하나까지 정확히 일치**해야 합니다.
+           - 예: 요람에 '대학물리학1'이라 되어 있다면, 시간표의 '대학물리및실험1'을 가져오면 **안 됩니다**. '대학물리학1'을 찾아야 합니다.
+           - 예: 'C프로그래밍'과 '고급C프로그래밍'은 다른 과목입니다.
+           - **만약 정확히 일치하는 과목명이 시간표에 없다면, 절대 표에 넣지 말고 아래 '배치 실패 목록'에 적으세요.**
 
-    2. **필수 커리큘럼 준수**:
-       - 제공된 문서(요람 등)를 분석하여 '{major} {grade} {semester}'에 꼭 들어야 하는 필수 과목(전필, 기초교양 등)을 파악하세요.
-       - 시간 정보가 확인된 필수 과목은 우선적으로 배치하세요.
+        2. **강의 시간 변조 및 확장 금지**:
+           - PDF 시간표에 적힌 요일과 교시를 **절대로** 변경하거나 늘리지 마세요.
+           - 예: PDF에 "월1, 수2"라고 적혀있다면, **그대로 "월1, 수2"**에만 배치해야 합니다.
+           - 절대로 "월1,2, 수1,2" 처럼 시간을 임의로 늘려서 잡지 마세요.
+           - 시간이 "미정"이거나 비어있다면 표에 넣지 마세요.
 
-    3. **출력 형식 (세로형 HTML Table)**:
-       - 반드시 **HTML `<table>` 태그**를 사용해라.
-       - **행(Row): 1교시 ~ 9교시**
-       - **열(Column): 월, 화, 수, 목, 금, 토, 일** (7일 모두 표시)
-       - 각 수업 셀마다 **서로 다른 파스텔톤 배경색**(`style="background-color: #..."`)을 적용해라.
-       - 셀 내용: `<b>과목명</b><br><small>교수명</small>`
-       - 빈 시간(공강)은 비워둬라.
-    
-    4. **출력 순서 및 형식 (Clean Output)**:
-       - **반드시 시간표 HTML 표를 가장 먼저 출력해라.**
-       - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** 그냥 Raw HTML 텍스트로 출력해라.
-       - 시간표 표 위에 어떤 텍스트도 적지 마라.
-       - **표 아래에** 과목 선정 이유와, **시간을 찾지 못해 배치하지 못한 필수 과목 목록**을 반드시 작성해라.
+        3. **학년 및 이수구분 엄격 준수**:
+           - {grade} {semester} 커리큘럼상 **'필수(Required)'**로 지정된 과목(전공필수, 교양필수)을 최우선으로 찾으세요.
+           - 해당 학년의 과목이 아닌데 임의로 넣지 마세요. (예: 1학년 시간표에 3학년 전공선택을 넣지 마세요.)
+           - 전공, 교필, 교선, 기교 등의 이수 구분을 문서에 적힌 그대로 따르세요.
 
-    [학습된 문서]
-    {context}
-    """
-    prompt = PromptTemplate(template=template, input_variables=["context", "major", "grade", "semester", "target_credits", "blocked_times", "requirements"])
-    chain = prompt | llm
-    input_data = {
-        "context": PRE_LEARNED_DATA,
-        "major": major,
-        "grade": grade,
-        "semester": semester,
-        "target_credits": target_credits,
-        "blocked_times": blocked_times_desc,
-        "requirements": requirements
-    }
-    # 결과 정제 (마크다운 코드 블록 제거)
-    response_content = chain.invoke(input_data).content
-    return clean_html_output(response_content)
+        [출력 형식 (세로형 HTML Table)]
+        - 반드시 **HTML `<table>` 태그** 사용.
+        - **행(Row): 1교시 ~ 9교시**
+        - **열(Column): 월, 화, 수, 목, 금, 토, 일** (7일 모두 표시)
+        - 각 수업 셀마다 **서로 다른 파스텔톤 배경색** 적용.
+        - 셀 내용: `<b>과목명</b><br><small>교수명</small>`
+        - 빈 시간(공강)은 비워둘 것.
+
+        [출력 순서]
+        1. 시간표 HTML 표 (가장 먼저 출력)
+        2. **배치된 필수 과목 검증**: (예: "대학수학1: 요람의 1-1 필수 과목과 일치하여 배치함")
+        3. **⚠️ 배치 실패 목록**: (필수인데 시간표 데이터에서 이름을 못 찾거나 시간이 없는 경우 여기에 명시)
+
+        [학습된 문서]
+        {context}
+        """
+        prompt = PromptTemplate(template=template, input_variables=["context", "major", "grade", "semester", "target_credits", "blocked_times", "requirements"])
+        chain = prompt | llm
+        input_data = {
+            "context": PRE_LEARNED_DATA,
+            "major": major,
+            "grade": grade,
+            "semester": semester,
+            "target_credits": target_credits,
+            "blocked_times": blocked_times_desc,
+            "requirements": requirements
+        }
+        return chain.invoke(input_data).content
+
+    try:
+        response_content = run_with_retry(_execute)
+        return clean_html_output(response_content)
+    except Exception as e:
+        if "RESOURCE_EXHAUSTED" in str(e):
+            return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
+        return f"❌ AI 오류: {str(e)}"
 
 def chat_with_timetable_ai(current_timetable, user_input):
     llm = get_llm()
-    template = """
-    너는 현재 시간표에 대한 상담을 해주는 AI 조교야.
     
-    [현재 시간표 상태]
-    {current_timetable}
+    def _execute():
+        template = """
+        너는 현재 시간표에 대한 상담을 해주는 AI 조교야.
+        
+        [현재 시간표 상태]
+        {current_timetable}
 
-    [사용자 입력]
-    "{user_input}"
+        [사용자 입력]
+        "{user_input}"
 
-    [지시사항]
-    사용자의 입력 의도를 파악해서 아래 두 가지 중 하나로 반응해.
+        [지시사항]
+        사용자의 입력 의도를 파악해서 아래 두 가지 중 하나로 반응해.
+        
+        **Case 1. 시간표 수정 요청인 경우 (예: "1교시 빼줘", "교수 바꿔줘"):**
+        - 시간표를 **재작성(HTML Table 형식 유지 - 세로형, 월~일 7일 표시)**해줘.
+        - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** Raw HTML로 출력해.
+        - **중요**: 수정 시에도 없는 과목을 만들거나, 시간을 임의로 늘리지 마. (원래 1시간짜리면 1시간만 배치)
+        
+        **Case 2. 과목에 대한 단순 질문인 경우 (예: "이거 선수과목 뭐야?"):**
+        - **시간표를 다시 출력하지 말고**, 질문에 대한 **텍스트 답변**만 해.
+        - **답변할 때 근거가 되는 문서의 원문 내용을 반드시 " " (쌍따옴표) 안에 인용해서 포함해줘.**
+        
+        답변 시작에 [수정] 또는 [답변] 태그를 붙여서 구분해줘.
+        """
+        prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input"])
+        chain = prompt | llm
+        return chain.invoke({"current_timetable": current_timetable, "user_input": user_input}).content
     
-    **Case 1. 시간표 수정 요청인 경우 (예: "1교시 빼줘", "교수 바꿔줘"):**
-    - 시간표를 **재작성(HTML Table 형식 유지 - 세로형, 월~일 7일 표시)**해줘.
-    - **반드시 수정된 시간표(HTML Table)를 가장 먼저 출력**하고, 그 뒤에 무엇이 바뀌었는지 짧게 설명해.
-    - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** Raw HTML로 출력해.
-    - 수정 시에도 **없는 정보를 지어내지 않도록** 주의해.
-    
-    **Case 2. 과목에 대한 단순 질문인 경우 (예: "이거 선수과목 뭐야?"):**
-    - **시간표를 다시 출력하지 말고**, 질문에 대한 **텍스트 답변**만 해.
-    - 학습된 지식을 활용해.
-    - **답변할 때 근거가 되는 문서의 원문 내용을 반드시 " " (쌍따옴표) 안에 인용해서 포함해줘.**
-    
-    답변 시작에 [수정] 또는 [답변] 태그를 붙여서 구분해줘.
-    """
-    prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input"])
-    chain = prompt | llm
-    
-    response_content = chain.invoke({"current_timetable": current_timetable, "user_input": user_input}).content
-    
-    if "[수정]" in response_content:
-        # 태그와 내용 분리 후 HTML 정제
-        parts = response_content.split("[수정]", 1)
-        if len(parts) > 1:
-            return "[수정]" + clean_html_output(parts[1])
-        else:
-            return clean_html_output(response_content)
-            
-    return response_content
+    try:
+        response_content = run_with_retry(_execute)
+        
+        if "[수정]" in response_content:
+            parts = response_content.split("[수정]", 1)
+            if len(parts) > 1:
+                return "[수정]" + clean_html_output(parts[1])
+            else:
+                return clean_html_output(response_content)
+                
+        return response_content
+    except Exception as e:
+        if "RESOURCE_EXHAUSTED" in str(e):
+            return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
+        return f"❌ AI 오류: {str(e)}"
 
 # -----------------------------------------------------------------------------
 # [2] UI 구성
@@ -263,16 +293,21 @@ if st.session_state.current_menu == "🤖 AI 학사 지식인":
 elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     st.subheader("📅 AI 맞춤형 시간표 설계")
 
+    # 시간표 표시 영역을 위한 빈 컨테이너 생성 (Placeholder)
+    timetable_area = st.empty()
+
+    # 현재 시간표가 있으면 표시
     if st.session_state.timetable_result:
-        st.markdown("### 🗓️ 내 시간표")
-        st.markdown(st.session_state.timetable_result, unsafe_allow_html=True)
-        st.divider()
+        with timetable_area.container():
+            st.markdown("### 🗓️ 내 시간표")
+            st.markdown(st.session_state.timetable_result, unsafe_allow_html=True)
+            st.divider()
 
     with st.expander("시간표 설정 열기/닫기", expanded=not bool(st.session_state.timetable_result)):
         col1, col2 = st.columns([1, 1.5])
         with col1:
             st.markdown("#### 1️⃣ 기본 정보")
-            # 광운대학교 주요 학과 리스트 (필요 시 수정 가능)
+            # 광운대학교 주요 학과 리스트
             kw_departments = [
                 "전자융합공학과", "전자공학과", "전자통신공학과", "전기공학과", 
                 "전자재료공학과", "로봇학부", "컴퓨터정보공학부", "소프트웨어학부", 
@@ -315,7 +350,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                     if not edited_schedule.iloc[idx][day]:
                         blocked_times.append(f"{day}요일 {period_label}")
             blocked_desc = ", ".join(blocked_times) if blocked_times else "없음"
-            with st.spinner("선수과목 확인 및 시간표 조합 중..."):
+            with st.spinner("선수과목 확인 및 시간표 조합 중... (최대 1분 소요될 수 있습니다)"):
                 result = generate_timetable_ai(major, grade, semester, target_credit, blocked_desc, requirements)
                 st.session_state.timetable_result = result
                 st.session_state.timetable_chat_history = []
@@ -337,13 +372,20 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             with st.chat_message("assistant"):
                 with st.spinner("분석 중..."):
                     response = chat_with_timetable_ai(st.session_state.timetable_result, chat_input)
+                    
                     if "[수정]" in response:
                         new_timetable = response.replace("[수정]", "").strip()
-                        new_timetable = clean_html_output(new_timetable) # 한번 더 확실하게 정제
+                        new_timetable = clean_html_output(new_timetable) 
                         st.session_state.timetable_result = new_timetable
-                        st.markdown(new_timetable, unsafe_allow_html=True)
-                        st.session_state.timetable_chat_history.append({"role": "assistant", "content": "시간표를 수정했습니다. 위쪽 표를 확인해주세요."})
-                        st.rerun()
+                        
+                        with timetable_area.container():
+                            st.markdown("### 🗓️ 내 시간표")
+                            st.markdown(new_timetable, unsafe_allow_html=True)
+                            st.divider()
+                        
+                        success_msg = "시간표를 수정했습니다. 위쪽 표가 업데이트 되었습니다."
+                        st.write(success_msg)
+                        st.session_state.timetable_chat_history.append({"role": "assistant", "content": success_msg})
                     else:
                         clean_response = response.replace("[답변]", "").strip()
                         st.markdown(clean_response)

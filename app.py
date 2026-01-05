@@ -116,20 +116,24 @@ def ask_ai(question):
             return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# 공통 프롬프트 지시사항
+# 공통 프롬프트 지시사항 (변수 포함: major, grade, semester)
 COMMON_TIMETABLE_INSTRUCTION = """
-[★★★ 핵심 알고리즘: 2단계 검증 프로세스 (Strict Verification) ★★★]
+[★★★ 핵심 알고리즘: 3단계 검증 및 필터링 (Strict Verification) ★★★]
 
 1. **Step 1: 요람(Curriculum) 기반 '수강 대상' 리스트 확정**:
    - 먼저 PDF 요람 문서에서 **'{major} {grade} {semester}'**에 배정된 **'표준 이수 과목' 목록**을 추출하세요.
    - **주의:** 'MSC 필수', '공학인증 필수'라고 적혀 있어도, 이 학기(예: 1학년 1학기) 표에 없으면 리스트에 넣지 마세요.
 
-2. **Step 2: 시간표 데이터와 정밀 대조 (Exact Match Only)**:
-   - Step 1에서 확정된 리스트에 있는 과목만 시간표 데이터에서 찾으세요.
-   - **과목명 완전 일치 필수**: 예: '대학물리학1' vs '대학물리및실험1' 구분.
-   - **학년 불일치 자동 탈락 (Red Line)**: 사용자가 '1학년'인데 대상이 '2'면 제외.
+2. **Step 2: 학년 정합성 검사 (Grade Validation)**:
+   - 추출된 과목이 실제 시간표 데이터에서 몇 학년 대상으로 개설되었는지 확인하세요.
+   - **사용자가 선택한 학년({grade})과 시간표의 대상 학년이 일치하지 않으면 과감히 제외하세요.**
+   - (예: 사용자가 1학년인데, 시간표에 '2학년' 대상이라고 적혀있으면 배치 금지)
 
-3. **출력 형식 (세로형 HTML Table)**:
+3. **Step 3: 시간표 데이터와 정밀 대조 (Exact Match)**:
+   - 위 단계를 통과한 과목만 시간표에 배치하세요.
+   - **과목명 완전 일치 필수**: 예: '대학물리학1' vs '대학물리및실험1' 구분.
+
+4. **출력 형식 (세로형 HTML Table)**:
    - 반드시 **HTML `<table>` 태그**를 사용해라.
    - **행(Row): 1교시 ~ 9교시** (행 머리글에 시간 포함: 1교시 (09:00~10:15) 등)
    - **열(Column): 월, 화, 수, 목, 금, 토, 일** (7일 모두 표시)
@@ -139,16 +143,16 @@ COMMON_TIMETABLE_INSTRUCTION = """
      - **수업이 없는 빈 시간(공강)은 반드시 흰색 배경**으로 둬라.
      - 셀 내용: `<b>과목명</b><br><small>교수명 (대상학년)</small>`
 
-4. **온라인 및 원격 강의 처리 (필수 - 표 내부에 포함)**:
+5. **온라인 및 원격 강의 처리 (필수 - 표 내부에 포함)**:
    - 강의 시간이 **'온라인', '원격', 'Cyber', '시간 미지정'** 등이면 **시간표 표(Table)의 맨 마지막 행에 추가**하세요.
    - **행 제목:** `<b>온라인/기타</b>`
    - **내용:** 해당되는 모든 과목을 `<b>과목명</b>(교수명)` 형식으로 나열하세요. (요일 열은 합치거나(colspan) 적절히 분배하여 표시)
    - **절대 표 밖으로 빼지 말고, 테이블의 일부로 포함시키세요.**
 
-5. **출력 순서 고정**:
+6. **출력 순서 고정**:
    - 1순위: HTML 시간표 표 (온라인 강의 포함)
-   - 2순위: "### ✅ 필수 과목 검증"
-   - 3순위: "### ⚠️ 배치 실패 목록"
+   - 2순위: "### ✅ 필수 과목 검증 및 학년 일치 확인" (각 과목별로 '대상 학년'이 맞는지 명시)
+   - 3순위: "### ⚠️ 배치 실패/제외 목록" (학년 불일치로 제외된 과목 포함)
 """
 
 # 시간표 생성 함수
@@ -194,7 +198,7 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
             return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# [복구됨] 상담 함수: grade, major, semester 등의 변수를 모두 받아서 처리하는 버전
+# [수정 완료] 상담 함수: 필요한 모든 변수(major, grade, semester)를 받아서 프롬프트에 전달
 def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester):
     llm = get_llm()
     def _execute():
@@ -218,6 +222,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         - 시간표를 **재작성**해줘.
         """ + COMMON_TIMETABLE_INSTRUCTION + """
         - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** Raw HTML로 출력해.
+        - 수정 시에도 **없는 정보를 지어내지 않도록** 주의해.
         
         **Case 2. 과목에 대한 단순 질문인 경우 (예: "이거 선수과목 뭐야?"):**
         - **시간표를 다시 출력하지 말고**, 질문에 대한 **텍스트 답변**만 해.
@@ -228,11 +233,11 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         [학습된 문서]
         {context}
         """
-        # input_variables에 모든 변수 포함
+        # input_variables에 COMMON_TIMETABLE_INSTRUCTION 내부의 변수(major, grade, semester)도 모두 포함
         prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input", "major", "grade", "semester", "context"])
         chain = prompt | llm
         
-        # invoke 호출 시 모든 변수 전달 (이 부분이 복구됨)
+        # [핵심] invoke 호출 시 빠진 변수 없이 모두 전달
         return chain.invoke({
             "current_timetable": current_timetable, 
             "user_input": user_input,
@@ -386,7 +391,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 st.write(chat_input)
             with st.chat_message("assistant"):
                 with st.spinner("분석 중..."):
-                    # [복구됨] 함수 호출 시 필요한 인자들을 모두 전달
+                    # [수정됨] 함수 호출 시 필요한 변수들(major, grade, semester) 전달
                     response = chat_with_timetable_ai(st.session_state.timetable_result, chat_input, major, grade, semester)
                     if "[수정]" in response:
                         new_timetable = response.replace("[수정]", "").strip()

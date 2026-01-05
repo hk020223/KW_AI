@@ -12,7 +12,30 @@ from langchain_core.prompts import PromptTemplate
 # [0] 설정 및 데이터 로드
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="KW-강의마스터 Pro", page_icon="🎓", layout="wide")
-api_key = os.environ.get("GOOGLE_API_KEY", "")
+
+# [수정됨] API Key 로드 로직 강화 (Secrets 및 환경변수 모두 지원)
+if "GOOGLE_API_KEY" in st.secrets:
+    # Streamlit Cloud 배포 환경용
+    api_key = st.secrets["GOOGLE_API_KEY"]
+else:
+    # 로컬 개발 환경용
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+
+# API Key가 없을 경우 경고 메시지 표시 및 중단
+if not api_key:
+    st.error("🚨 **Google API Key가 설정되지 않았습니다.**")
+    with st.expander("🔧 API Key 설정 방법 보기"):
+        st.markdown("""
+        1. **로컬 환경:** `.env` 파일이나 시스템 환경변수에 `GOOGLE_API_KEY`를 설정하세요.
+        2. **Streamlit Cloud 배포 시:**
+           - 앱 설정(Settings) > **Secrets** 메뉴로 이동합니다.
+           - 아래와 같이 입력하고 저장하세요.
+           ```toml
+           GOOGLE_API_KEY = "AIzaSy... (여기에 발급받은 키 입력)"
+           ```
+        3. 키가 없다면 [Google AI Studio](https://aistudio.google.com/app/apikey)에서 무료로 발급받으세요.
+        """)
+    st.stop() # 키가 없으면 앱 실행을 여기서 멈춤
 
 # 세션 상태 초기화
 if "global_log" not in st.session_state:
@@ -143,10 +166,16 @@ COMMON_TIMETABLE_INSTRUCTION = """
      - **수업이 없는 빈 시간(공강)은 반드시 흰색 배경**으로 둬라.
      - 셀 내용: `<b>과목명</b><br><small>교수명 (대상학년)</small>`
 
-4. **출력 순서 고정**:
+4. **온라인 및 시간 미지정 과목 처리 (필수)**:
+   - 강의 시간이 **'온라인', '원격', 'Cyber', '시간 미지정'** 등으로 표시된 과목은 **시간표 표(Table)에 억지로 넣지 마세요.**
+   - 대신, **표 바로 아래에** "### 💻 온라인/시간 미지정 과목" 섹션을 만들어 별도 리스트로 출력하세요.
+   - 형식: `- **과목명** (교수명): 온라인 강의/시간 미지정`
+
+5. **출력 순서 고정**:
    - **1순위:** HTML 시간표 표 (어떤 설명 텍스트도 없이 오직 `<table>...</table>` 코드만 가장 먼저 출력)
-   - **2순위:** "### ✅ 필수 과목 검증" 섹션 (예: 대학물리학1 - 요람 1-1 필수 일치, 시간표 1학년 대상 일치)
-   - **3순위:** "### ⚠️ 배치 실패 목록" 섹션 (이름 불일치, 학년 불일치 등으로 제외된 내역)
+   - **2순위:** "### 💻 온라인/시간 미지정 과목" 섹션 (해당 과목이 있을 경우에만 출력)
+   - **3순위:** "### ✅ 필수 과목 검증" 섹션 (예: 대학물리학1 - 요람 1-1 필수 일치, 시간표 1학년 대상 일치)
+   - **4순위:** "### ⚠️ 배치 실패 목록" 섹션 (이름 불일치, 학년 불일치 등으로 제외된 내역)
    - 이 순서를 절대 바꾸지 마라.
 """
 
@@ -195,7 +224,8 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
             return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-def chat_with_timetable_ai(current_timetable, user_input):
+# 수정된 함수: 누락된 변수(major, grade, semester, context)를 추가로 받음
+def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester):
     llm = get_llm()
     
     def _execute():
@@ -207,6 +237,10 @@ def chat_with_timetable_ai(current_timetable, user_input):
 
         [사용자 입력]
         "{user_input}"
+
+        [학생 정보]
+        - 소속: {major}
+        - 학년/학기: {grade} {semester}
 
         [지시사항]
         사용자의 입력 의도를 파악해서 아래 두 가지 중 하나로 반응해.
@@ -223,10 +257,23 @@ def chat_with_timetable_ai(current_timetable, user_input):
         - **답변할 때 근거가 되는 문서의 원문 내용을 반드시 " " (쌍따옴표) 안에 인용해서 포함해줘.**
         
         답변 시작에 [수정] 또는 [답변] 태그를 붙여서 구분해줘.
+
+        [학습된 문서]
+        {context}
         """
-        prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input"])
+        # input_variables에 모든 변수 추가
+        prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input", "major", "grade", "semester", "context"])
         chain = prompt | llm
-        return chain.invoke({"current_timetable": current_timetable, "user_input": user_input}).content
+        
+        # invoke 호출 시 모든 변수 전달
+        return chain.invoke({
+            "current_timetable": current_timetable, 
+            "user_input": user_input,
+            "major": major,
+            "grade": grade,
+            "semester": semester,
+            "context": PRE_LEARNED_DATA
+        }).content
     
     try:
         response_content = run_with_retry(_execute)
@@ -324,25 +371,33 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 "전자재료공학과", "로봇학부", "컴퓨터정보공학부", "소프트웨어학부", 
                 "정보융합학부", "건축학과", "건축공학과", "화학공학과", "환경공학과"
             ]
-            major = st.selectbox("학과", kw_departments)
+            # [수정] key 추가로 입력값 기억
+            major = st.selectbox("학과", kw_departments, key="tt_major")
             
             c1, c2 = st.columns(2)
-            grade = c1.selectbox("학년", ["1학년", "2학년", "3학년", "4학년"])
-            semester = c2.selectbox("학기", ["1학기", "2학기"])
-            target_credit = st.number_input("목표 학점", 9, 24, 18)
-            requirements = st.text_area("추가 요구사항", placeholder="예: 전공 필수 챙겨줘")
+            # [수정] key 추가로 입력값 기억
+            grade = c1.selectbox("학년", ["1학년", "2학년", "3학년", "4학년"], key="tt_grade")
+            semester = c2.selectbox("학기", ["1학기", "2학기"], key="tt_semester")
+            target_credit = st.number_input("목표 학점", 9, 24, 18, key="tt_credit")
+            requirements = st.text_area("추가 요구사항", placeholder="예: 전공 필수 챙겨줘", key="tt_req")
 
         with col2:
             st.markdown("#### 2️⃣ 공강 시간 설정")
+            st.info("✅ **체크된 시간**: 수업 가능 (기본)  \n⬜ **체크 해제**: 공강 (수업 배정 안 함)")
+            
             kw_times = {
                 "1교시": "09:00~10:15", "2교시": "10:30~11:45", "3교시": "12:00~13:15",
                 "4교시": "13:30~14:45", "5교시": "15:00~16:15", "6교시": "16:30~17:45",
                 "7교시": "18:00~19:15", "8교시": "19:25~20:40", "9교시": "20:50~22:05"
             }
             schedule_index = [f"{k} ({v})" for k, v in kw_times.items()]
-            schedule_data = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
+            
+            # [수정] 공강 데이터프레임 초기화 및 key 추가로 편집 상태 기억
+            if "init_schedule_df" not in st.session_state:
+                st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
+
             edited_schedule = st.data_editor(
-                schedule_data,
+                st.session_state.init_schedule_df,
                 column_config={
                     "월": st.column_config.CheckboxColumn("월", default=True),
                     "화": st.column_config.CheckboxColumn("화", default=True),
@@ -351,7 +406,8 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                     "금": st.column_config.CheckboxColumn("금", default=True),
                 },
                 height=360,
-                use_container_width=True
+                use_container_width=True,
+                key="tt_editor" # 이 키 덕분에 공강 체크 해제 내역이 기억됨
             )
 
         if st.button("시간표 생성하기 ✨", type="primary", use_container_width=True):
@@ -382,7 +438,8 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 st.write(chat_input)
             with st.chat_message("assistant"):
                 with st.spinner("분석 중..."):
-                    response = chat_with_timetable_ai(st.session_state.timetable_result, chat_input)
+                    # [수정됨] 함수 호출 시 필요한 변수들(major, grade, semester)을 함께 전달
+                    response = chat_with_timetable_ai(st.session_state.timetable_result, chat_input, major, grade, semester)
                     
                     if "[수정]" in response:
                         new_timetable = response.replace("[수정]", "").strip()

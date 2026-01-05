@@ -116,7 +116,7 @@ def ask_ai(question):
             return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# 공통 프롬프트 지시사항
+# 공통 프롬프트 지시사항 (생성/수정 모두 사용)
 COMMON_TIMETABLE_INSTRUCTION = """
 [★★★ 핵심 알고리즘: 2단계 검증 프로세스 (Strict Verification) ★★★]
 
@@ -192,7 +192,7 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
             return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# [수정됨] 상담 함수: 데이터를 전달하는 방식을 확실하게 수정
+# [복구됨] 상담 함수: grade, major, semester 등의 변수를 모두 받아서 처리하는 버전
 def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester):
     llm = get_llm()
     def _execute():
@@ -226,11 +226,11 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         [학습된 문서]
         {context}
         """
-        # input_variables에 모든 변수를 명시
+        # input_variables에 모든 변수 포함
         prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input", "major", "grade", "semester", "context"])
         chain = prompt | llm
         
-        # [핵심] invoke에 모든 변수가 빠짐없이 들어가야 함
+        # invoke 호출 시 모든 변수 전달 (이 부분이 복구됨)
         return chain.invoke({
             "current_timetable": current_timetable, 
             "user_input": user_input,
@@ -384,7 +384,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 st.write(chat_input)
             with st.chat_message("assistant"):
                 with st.spinner("분석 중..."):
-                    # [수정됨] 필요한 변수들(major, grade, semester) 전달
+                    # [복구됨] 함수 호출 시 필요한 인자들을 모두 전달
                     response = chat_with_timetable_ai(st.session_state.timetable_result, chat_input, major, grade, semester)
                     if "[수정]" in response:
                         new_timetable = response.replace("[수정]", "").strip()

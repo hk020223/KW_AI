@@ -689,6 +689,19 @@ elif st.session_state.current_menu == "🎓 졸업 요건 진단":
     - 전체 내역이 보이도록 여러 장으로 나누어 업로드해도 괜찮습니다.
     """)
 
+    # [추가됨] 진단 결과 저장/불러오기
+    if st.session_state.user and fb_manager.is_initialized:
+        with st.expander("📂 저장된 진단 결과 불러오기"):
+            saved_diags = fb_manager.load_collection('graduation_diagnosis')
+            if saved_diags:
+                selected_diag = st.selectbox("불러올 진단 선택", 
+                                           saved_diags, 
+                                           format_func=lambda x: x['created_at'].strftime('%Y-%m-%d %H:%M'))
+                if st.button("진단 결과 불러오기"):
+                    st.session_state.graduation_analysis_result = selected_diag['result']
+                    st.success("진단 결과를 불러왔습니다!")
+                    st.rerun()
+
     uploaded_files = st.file_uploader("캡처 이미지 업로드 (여러 장 가능)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
     if uploaded_files:
@@ -703,6 +716,18 @@ elif st.session_state.current_menu == "🎓 졸업 요건 진단":
     if st.session_state.graduation_analysis_result:
         st.divider()
         st.markdown("### 📊 분석 결과")
+        
+        # [추가됨] 결과 저장 버튼
+        if st.session_state.user and fb_manager.is_initialized:
+            if st.button("☁️ 분석 결과 저장하기"):
+                doc_data = {
+                    "result": st.session_state.graduation_analysis_result,
+                    "created_at": datetime.datetime.now()
+                }
+                doc_id = str(int(time.time()))
+                if fb_manager.save_data('graduation_diagnosis', doc_id, doc_data):
+                    st.toast("진단 결과가 저장되었습니다!", icon="✅")
+        
         st.markdown(st.session_state.graduation_analysis_result)
         
         st.divider()

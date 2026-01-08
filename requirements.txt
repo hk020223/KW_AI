@@ -5,3 +5,5 @@ langchain-community
 langchain-core
 pypdf
 Pillow
+firebase-admin
+requests

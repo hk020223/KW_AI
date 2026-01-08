@@ -6,11 +6,17 @@ import datetime
 import time
 import base64
 import io
+import json
+import requests
 from PIL import Image
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
+
+# [추가됨] Firebase 라이브러리
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # -----------------------------------------------------------------------------
 # [0] 설정 및 데이터 로드
@@ -42,6 +48,9 @@ if "graduation_analysis_result" not in st.session_state:
     st.session_state.graduation_analysis_result = ""
 if "graduation_chat_history" not in st.session_state:
     st.session_state.graduation_chat_history = []
+# [추가됨] 로그인 세션
+if "user" not in st.session_state:
+    st.session_state.user = None
 
 def add_log(role, content, menu_context=None):
     timestamp = datetime.datetime.now().strftime("%H:%M")
@@ -77,6 +86,74 @@ def run_with_retry(func, *args, **kwargs):
                     time.sleep(delays[i])
                     continue
             raise e
+
+# -----------------------------------------------------------------------------
+# [New] Firebase Manager (로그인 및 저장 기능 담당)
+# -----------------------------------------------------------------------------
+class FirebaseManager:
+    def __init__(self):
+        self.db = None
+        self.is_initialized = False
+        self.init_firestore()
+
+    def init_firestore(self):
+        """Firestore DB 초기화"""
+        # secrets에 설정이 없으면 기능 비활성화 (에러 방지)
+        if "firebase_service_account" in st.secrets:
+            try:
+                if not firebase_admin._apps:
+                    cred_info = dict(st.secrets["firebase_service_account"])
+                    cred = credentials.Certificate(cred_info)
+                    firebase_admin.initialize_app(cred)
+                self.db = firestore.client()
+                self.is_initialized = True
+            except Exception:
+                pass
+
+    def auth_user(self, email, password, mode="login"):
+        """로그인/회원가입 처리"""
+        if "FIREBASE_WEB_API_KEY" not in st.secrets:
+            return None, "API Key 설정이 필요합니다."
+        
+        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+        endpoint = "signInWithPassword" if mode == "login" else "signUp"
+        url = f"[https://identitytoolkit.googleapis.com/v1/accounts](https://identitytoolkit.googleapis.com/v1/accounts):{endpoint}?key={api_key}"
+        
+        payload = {"email": email, "password": password, "returnSecureToken": True}
+        try:
+            res = requests.post(url, json=payload)
+            data = res.json()
+            if "error" in data:
+                return None, data["error"]["message"]
+            return data, None
+        except Exception as e:
+            return None, str(e)
+
+    def save_data(self, collection, doc_id, data):
+        """데이터 저장"""
+        if not self.is_initialized or not st.session_state.user:
+            return False
+        try:
+            user_id = st.session_state.user['localId']
+            doc_ref = self.db.collection('users').document(user_id).collection(collection).document(doc_id)
+            data['updated_at'] = firestore.SERVER_TIMESTAMP
+            doc_ref.set(data)
+            return True
+        except:
+            return False
+
+    def load_collection(self, collection):
+        """데이터 목록 불러오기"""
+        if not self.is_initialized or not st.session_state.user:
+            return []
+        try:
+            user_id = st.session_state.user['localId']
+            docs = self.db.collection('users').document(user_id).collection(collection).order_by('updated_at', direction=firestore.Query.DESCENDING).stream()
+            return [{"id": doc.id, **doc.to_dict()} for doc in docs]
+        except:
+            return []
+
+fb_manager = FirebaseManager()
 
 # PDF 데이터 로드
 @st.cache_resource(show_spinner="PDF 문서를 분석 중입니다...")
@@ -402,8 +479,35 @@ def change_menu(menu_name):
 
 with st.sidebar:
     st.title("🗂️ 활동 로그")
+    # [로그인 UI 추가]
+    if st.session_state.user is None:
+        with st.expander("🔐 로그인 / 회원가입", expanded=True):
+            auth_mode = st.radio("모드 선택", ["로그인", "회원가입"], horizontal=True)
+            email = st.text_input("이메일")
+            password = st.text_input("비밀번호", type="password")
+            
+            if st.button(auth_mode):
+                if not email or not password:
+                    st.error("이메일과 비밀번호를 입력하세요.")
+                else:
+                    mode = "login" if auth_mode == "로그인" else "signup"
+                    with st.spinner(f"{auth_mode} 중..."):
+                        user, err = fb_manager.auth_user(email, password, mode)
+                        if user:
+                            st.session_state.user = user
+                            st.success(f"환영합니다! ({user['email']})")
+                            st.rerun()
+                        else:
+                            st.error(f"오류: {err}")
+    else:
+        st.info(f"👤 **{st.session_state.user['email']}**님")
+        if st.button("로그아웃"):
+            st.session_state.user = None
+            st.rerun()
+            
+    st.divider()
     st.caption("클릭하면 해당 화면으로 이동합니다.")
-    log_container = st.container(height=400)
+    log_container = st.container(height=300)
     with log_container:
         if not st.session_state.global_log:
             st.info("기록 없음")
@@ -448,11 +552,45 @@ if st.session_state.current_menu == "🤖 AI 학사 지식인":
 
 elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     st.subheader("📅 AI 맞춤형 시간표 설계")
+    
+    # [시간표 불러오기 버튼]
+    if st.session_state.user and fb_manager.is_initialized:
+        with st.expander("📂 저장된 시간표 불러오기"):
+            saved_tables = fb_manager.load_collection('timetables')
+            if saved_tables:
+                selected_table = st.selectbox("불러올 시간표 선택", 
+                                            options=saved_tables, 
+                                            format_func=lambda x: f"{x['major']} {x['grade']} ({x['created_at'].strftime('%Y-%m-%d %H:%M')})")
+                if st.button("불러오기"):
+                    st.session_state.timetable_result = selected_table['result']
+                    st.success("시간표를 불러왔습니다!")
+                    st.rerun()
+            else:
+                st.info("저장된 시간표가 없습니다.")
+
     timetable_area = st.empty()
     if st.session_state.timetable_result:
         with timetable_area.container():
             st.markdown("### 🗓️ 내 시간표")
             st.markdown(st.session_state.timetable_result, unsafe_allow_html=True)
+            
+            # [시간표 저장 버튼]
+            if st.session_state.user and fb_manager.is_initialized:
+                if st.button("☁️ 현재 시간표 저장하기"):
+                    current_major = st.session_state.get("tt_major", "알수없음")
+                    current_grade = st.session_state.get("tt_grade", "알수없음")
+                    
+                    doc_data = {
+                        "result": st.session_state.timetable_result,
+                        "major": current_major,
+                        "grade": current_grade,
+                        "created_at": datetime.datetime.now()
+                    }
+                    doc_id = str(int(time.time()))
+                    if fb_manager.save_data('timetables', doc_id, doc_data):
+                        st.toast("시간표가 저장되었습니다!", icon="✅")
+                    else:
+                        st.toast("저장 실패", icon="❌")
             st.divider()
 
     with st.expander("시간표 설정 열기/닫기", expanded=not bool(st.session_state.timetable_result)):
@@ -599,4 +737,3 @@ elif st.session_state.current_menu == "🎓 졸업 요건 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
-

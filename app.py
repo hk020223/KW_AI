@@ -6,17 +6,11 @@ import datetime
 import time
 import base64
 import io
-import json
-import requests
 from PIL import Image
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
-
-# Firebase Admin SDK (Firestore용)
-import firebase_admin
-from firebase_admin import credentials, firestore
 
 # -----------------------------------------------------------------------------
 # [0] 설정 및 데이터 로드
@@ -48,9 +42,6 @@ if "graduation_analysis_result" not in st.session_state:
     st.session_state.graduation_analysis_result = ""
 if "graduation_chat_history" not in st.session_state:
     st.session_state.graduation_chat_history = []
-# 로그인 세션
-if "user" not in st.session_state:
-    st.session_state.user = None
 
 def add_log(role, content, menu_context=None):
     timestamp = datetime.datetime.now().strftime("%H:%M")
@@ -86,78 +77,6 @@ def run_with_retry(func, *args, **kwargs):
                     time.sleep(delays[i])
                     continue
             raise e
-
-# -----------------------------------------------------------------------------
-# [New] Firebase Manager (Auth & Firestore)
-# -----------------------------------------------------------------------------
-class FirebaseManager:
-    def __init__(self):
-        self.db = None
-        self.is_initialized = False
-        self.init_firestore()
-
-    def init_firestore(self):
-        """Firestore DB 초기화 (Service Account 필요)"""
-        if "firebase_service_account" in st.secrets:
-            try:
-                # 이미 초기화되었는지 확인
-                if not firebase_admin._apps:
-                    cred_info = dict(st.secrets["firebase_service_account"])
-                    cred = credentials.Certificate(cred_info)
-                    firebase_admin.initialize_app(cred)
-                self.db = firestore.client()
-                self.is_initialized = True
-            except Exception as e:
-                st.error(f"Firebase 초기화 오류: {str(e)}")
-
-    def auth_user(self, email, password, mode="login"):
-        """Firebase REST API를 이용한 로그인/회원가입"""
-        if "FIREBASE_WEB_API_KEY" not in st.secrets:
-            return None, "Secrets에 FIREBASE_WEB_API_KEY가 없습니다."
-        
-        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
-        endpoint = "signInWithPassword" if mode == "login" else "signUp"
-        url = f"[https://identitytoolkit.googleapis.com/v1/accounts](https://identitytoolkit.googleapis.com/v1/accounts):{endpoint}?key={api_key}"
-        
-        payload = {"email": email, "password": password, "returnSecureToken": True}
-        try:
-            res = requests.post(url, json=payload)
-            data = res.json()
-            if "error" in data:
-                return None, data["error"]["message"]
-            return data, None # data contains localId (uid), idToken, email
-        except Exception as e:
-            return None, str(e)
-
-    def save_data(self, collection, doc_id, data):
-        """데이터 저장"""
-        if not self.is_initialized or not st.session_state.user:
-            return False
-        try:
-            user_id = st.session_state.user['localId']
-            # 사용자별 서브컬렉션 또는 문서 사용
-            doc_ref = self.db.collection('users').document(user_id).collection(collection).document(doc_id)
-            data['updated_at'] = firestore.SERVER_TIMESTAMP
-            doc_ref.set(data)
-            return True
-        except Exception as e:
-            st.error(f"저장 실패: {e}")
-            return False
-
-    def load_collection(self, collection):
-        """사용자의 특정 컬렉션 데이터 목록 불러오기"""
-        if not self.is_initialized or not st.session_state.user:
-            return []
-        try:
-            user_id = st.session_state.user['localId']
-            docs = self.db.collection('users').document(user_id).collection(collection).order_by('updated_at', direction=firestore.Query.DESCENDING).stream()
-            return [{"id": doc.id, **doc.to_dict()} for doc in docs]
-        except Exception as e:
-            st.error(f"불러오기 실패: {e}")
-            return []
-
-# Firebase 인스턴스 생성
-fb_manager = FirebaseManager()
 
 # PDF 데이터 로드
 @st.cache_resource(show_spinner="PDF 문서를 분석 중입니다...")
@@ -483,34 +402,8 @@ def change_menu(menu_name):
 
 with st.sidebar:
     st.title("🗂️ 활동 로그")
-    # [인증 UI 추가]
-    if st.session_state.user is None:
-        with st.expander("🔐 로그인 / 회원가입", expanded=True):
-            auth_mode = st.radio("모드 선택", ["로그인", "회원가입"], horizontal=True)
-            email = st.text_input("이메일")
-            password = st.text_input("비밀번호", type="password")
-            
-            if st.button(auth_mode):
-                if not email or not password:
-                    st.error("이메일과 비밀번호를 입력하세요.")
-                else:
-                    mode = "login" if auth_mode == "로그인" else "signup"
-                    with st.spinner(f"{auth_mode} 중..."):
-                        user, err = fb_manager.auth_user(email, password, mode)
-                        if user:
-                            st.session_state.user = user
-                            st.success(f"환영합니다! ({user['email']})")
-                            st.rerun()
-                        else:
-                            st.error(f"오류: {err}")
-    else:
-        st.info(f"👤 **{st.session_state.user['email']}**님")
-        if st.button("로그아웃"):
-            st.session_state.user = None
-            st.rerun()
-            
-    st.divider()
-    log_container = st.container(height=300)
+    st.caption("클릭하면 해당 화면으로 이동합니다.")
+    log_container = st.container(height=400)
     with log_container:
         if not st.session_state.global_log:
             st.info("기록 없음")
@@ -555,51 +448,11 @@ if st.session_state.current_menu == "🤖 AI 학사 지식인":
 
 elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     st.subheader("📅 AI 맞춤형 시간표 설계")
-    
-    # [저장된 시간표 불러오기]
-    if st.session_state.user and fb_manager.is_initialized:
-        with st.expander("📂 저장된 시간표 불러오기"):
-            saved_tables = fb_manager.load_collection('timetables')
-            if saved_tables:
-                selected_table = st.selectbox("불러올 시간표 선택", 
-                                            options=saved_tables, 
-                                            format_func=lambda x: f"{x['major']} {x['grade']} ({x['created_at'].strftime('%Y-%m-%d %H:%M')})")
-                if st.button("불러오기"):
-                    st.session_state.timetable_result = selected_table['result']
-                    st.success("시간표를 불러왔습니다!")
-                    st.rerun()
-            else:
-                st.info("저장된 시간표가 없습니다.")
-
     timetable_area = st.empty()
     if st.session_state.timetable_result:
         with timetable_area.container():
             st.markdown("### 🗓️ 내 시간표")
             st.markdown(st.session_state.timetable_result, unsafe_allow_html=True)
-            
-            # [시간표 저장 버튼]
-            if st.session_state.user and fb_manager.is_initialized:
-                if st.button("☁️ 현재 시간표 저장하기"):
-                    # 현재 설정된 학과/학년 정보 가져오기 (세션 키 이용)
-                    # 주의: 위젯 키가 아직 초기화 안됐을 수 있으므로 기본값 처리
-                    current_major = st.session_state.get("tt_major", "알수없음")
-                    current_grade = st.session_state.get("tt_grade", "알수없음")
-                    
-                    doc_data = {
-                        "result": st.session_state.timetable_result,
-                        "major": current_major,
-                        "grade": current_grade,
-                        "created_at": datetime.datetime.now()
-                    }
-                    # 문서 ID를 타임스탬프로 생성
-                    doc_id = str(int(time.time()))
-                    if fb_manager.save_data('timetables', doc_id, doc_data):
-                        st.toast("시간표가 저장되었습니다!", icon="✅")
-                    else:
-                        st.toast("저장 실패 (로그인 확인)", icon="❌")
-            elif st.session_state.timetable_result:
-                st.caption("로그인하면 시간표를 저장할 수 있습니다.")
-                
             st.divider()
 
     with st.expander("시간표 설정 열기/닫기", expanded=not bool(st.session_state.timetable_result)):
@@ -746,3 +599,4 @@ elif st.session_state.current_menu == "🎓 졸업 요건 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+

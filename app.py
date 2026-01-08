@@ -4,6 +4,8 @@ import os
 import glob
 import datetime
 import time
+import base64
+import io
 from PIL import Image
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -269,15 +271,26 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
             return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# 졸업 요건 분석 함수
+# 졸업 요건 분석 함수 (이미지 Base64 변환 추가)
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
     if not llm: return "⚠️ API Key 오류"
 
+    # [수정] 이미지를 Base64 문자열로 변환하는 함수
+    def encode_image(image_file):
+        # 파일 포인터 위치 초기화
+        image_file.seek(0)
+        return base64.b64encode(image_file.read()).decode("utf-8")
+
     image_messages = []
     for img_file in uploaded_images:
-        img = Image.open(img_file)
-        image_messages.append(img)
+        # Streamlit의 UploadedFile을 Base64로 변환
+        base64_image = encode_image(img_file)
+        # LangChain에 전달할 올바른 포맷 (data URL 형식)
+        image_messages.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+        })
 
     def _execute():
         prompt = """
@@ -324,13 +337,12 @@ def analyze_graduation_requirements(uploaded_images):
         - 분석에 참고한 [학습된 학사 문서]의 관련 내용을 인용해주세요.
         """
         
-        message = HumanMessage(
-            content=[
-                {"type": "text", "text": prompt},
-                *[{"type": "image_url", "image_url": img} for img in image_messages],
-                {"type": "text", "text": f"\n\n[학습된 학사 문서]\n{PRE_LEARNED_DATA}"}
-            ]
-        )
+        # 메시지 구성: 텍스트 프롬프트 + 이미지들 + 참고 문서
+        content_list = [{"type": "text", "text": prompt}]
+        content_list.extend(image_messages)
+        content_list.append({"type": "text", "text": f"\n\n[학습된 학사 문서]\n{PRE_LEARNED_DATA}"})
+
+        message = HumanMessage(content=content_list)
         
         response = llm.invoke([message])
         return response.content

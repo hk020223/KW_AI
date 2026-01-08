@@ -118,7 +118,7 @@ class FirebaseManager:
         endpoint = "signInWithPassword" if mode == "login" else "signUp"
         
         # [수정됨] URL 형식 오류 수정 (중복된 주소 제거)
-        url = f"[https://identitytoolkit.googleapis.com/v1/accounts](https://identitytoolkit.googleapis.com/v1/accounts):{endpoint}?key={api_key}"
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:{endpoint}?key={api_key}"
         
         payload = {"email": email, "password": password, "returnSecureToken": True}
         try:
@@ -788,3 +788,4 @@ elif st.session_state.current_menu == "🎓 졸업 요건 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+

@@ -117,6 +117,7 @@ class FirebaseManager:
         
         api_key = st.secrets["FIREBASE_WEB_API_KEY"]
         endpoint = "signInWithPassword" if mode == "login" else "signUp"
+        # [수정됨] URL 생성 시 마크다운 문법 제거
         url = f"[https://identitytoolkit.googleapis.com/v1/accounts](https://identitytoolkit.googleapis.com/v1/accounts):{endpoint}?key={api_key}"
         
         payload = {"email": email, "password": password, "returnSecureToken": True}

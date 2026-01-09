@@ -116,14 +116,15 @@ def run_with_retry(func, *args, **kwargs):
             return func(*args, **kwargs)
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            # 429: Quota Exceeded, 503: Service Unavailable
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "503" in error_msg:
                 if i < max_retries - 1:
                     time.sleep(delays[i])
                     continue
             raise e
 
 # -----------------------------------------------------------------------------
-# [Firebase Manager] Firestore 기반 자체 인증 및 DB 관리 (Identity Toolkit 제거됨)
+# [Firebase Manager] Firestore 기반 자체 인증 및 DB 관리
 # -----------------------------------------------------------------------------
 class FirebaseManager:
     def __init__(self):
@@ -242,15 +243,16 @@ def load_knowledge_base():
 PRE_LEARNED_DATA = load_knowledge_base()
 
 # -----------------------------------------------------------------------------
-# [1] AI 엔진 (404 오류 방지를 위해 버전 명시)
+# [1] AI 엔진 (404 오류 방지를 위한 핵심 수정)
 # -----------------------------------------------------------------------------
 def get_llm():
     if not api_key: return None
-    # [수정] 404 오류 방지를 위해 구체적인 버전 'gemini-1.5-flash-001' 사용
+    # [수정] 가장 안정적인 정식 버전 넘버 사용
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash-001", temperature=0)
 
 def get_pro_llm():
     if not api_key: return None
+    # [수정] 이미지 분석용 모델도 동일하게 적용
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash-001", temperature=0)
 
 def ask_ai(question):
@@ -375,7 +377,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         return f"❌ AI 오류: {str(e)}"
 
 # =============================================================================
-# [수정된 섹션] 성적 및 진로 진단 분석 함수 (3개 탭 분리용 구분자 사용)
+# [수정된 섹션] 성적 및 진로 진단 분석 함수
 # =============================================================================
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
@@ -534,7 +536,7 @@ with st.sidebar:
     else:
         st.error("⚠️ 데이터 폴더에 PDF 파일이 없습니다.")
 
-# 메뉴 구성 (메뉴 이름 수정됨)
+# 메뉴 구성
 menu = st.radio("기능 선택", ["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"], 
                 horizontal=True, key="menu_radio", 
                 index=["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"].index(st.session_state.current_menu))
@@ -709,6 +711,19 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
     **취득 학점 내역을 캡처해서 업로드하세요!** AI 취업 컨설턴트가 당신의 성적표를 냉철하게 분석하여 **졸업 요건**, **성적 상태**, **커리어 방향성**을 진단해 드립니다.
     - KLAS 또는 학교 포털의 성적/학점 조회 화면을 캡처해주세요.
     """)
+
+    # [추가됨] 진단 결과 불러오기 기능
+    if st.session_state.user and fb_manager.is_initialized:
+        with st.expander("📂 저장된 진단 결과 불러오기"):
+            saved_diags = fb_manager.load_collection('graduation_diagnosis')
+            if saved_diags:
+                selected_diag = st.selectbox("불러올 진단 선택", 
+                                           saved_diags, 
+                                           format_func=lambda x: datetime.datetime.fromtimestamp(int(x['id'])).strftime('%Y-%m-%d %H:%M'))
+                if st.button("진단 결과 불러오기"):
+                    st.session_state.graduation_analysis_result = selected_diag['result']
+                    st.success("진단 결과를 불러왔습니다!")
+                    st.rerun()
 
     uploaded_files = st.file_uploader("캡처 이미지 업로드 (여러 장 가능)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 

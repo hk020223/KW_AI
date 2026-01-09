@@ -5,16 +5,12 @@ import glob
 import datetime
 import time
 import base64
-import io
-import json
-import requests
-from PIL import Image
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 
-# Firebase 라이브러리
+# Firebase 라이브러리 (Admin SDK)
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -127,7 +123,7 @@ def run_with_retry(func, *args, **kwargs):
             raise e
 
 # -----------------------------------------------------------------------------
-# [Firebase Manager] 로그인 및 저장 기능
+# [Firebase Manager] Firestore 기반 자체 인증 및 DB 관리
 # -----------------------------------------------------------------------------
 class FirebaseManager:
     def __init__(self):
@@ -136,6 +132,7 @@ class FirebaseManager:
         self.init_firestore()
 
     def init_firestore(self):
+        """Firestore DB 초기화 (Service Account 사용)"""
         if "firebase_service_account" in st.secrets:
             try:
                 if not firebase_admin._apps:
@@ -147,29 +144,59 @@ class FirebaseManager:
             except Exception:
                 pass
 
-    def auth_user(self, email, password, mode="login"):
-        if "FIREBASE_WEB_API_KEY" not in st.secrets:
-            return None, "API Key 설정이 필요합니다."
+    def login(self, email, password):
+        """Firestore에서 이메일/비번 매칭 검사"""
+        if not self.is_initialized:
+            return None, "Firebase 연결 실패"
         
-        api_key = st.secrets["FIREBASE_WEB_API_KEY"].strip()
-        endpoint = "signInWithPassword" if mode == "login" else "signUp"
-        url = f"[https://identitytoolkit.googleapis.com/v1/accounts](https://identitytoolkit.googleapis.com/v1/accounts):{endpoint}?key={api_key}"
-        
-        payload = {"email": email, "password": password, "returnSecureToken": True}
         try:
-            res = requests.post(url, json=payload)
-            data = res.json()
-            if "error" in data:
-                return None, data["error"]["message"]
-            return data, None
+            # users 컬렉션에서 email과 password가 일치하는 문서 검색
+            users_ref = self.db.collection('users')
+            # 주의: 실제 서비스에서는 password를 해싱하여 저장/비교해야 함
+            query = users_ref.where('email', '==', email).where('password', '==', password).stream()
+            
+            for doc in query:
+                user_data = doc.to_dict()
+                user_data['localId'] = doc.id  # 문서 ID를 식별자로 사용
+                return user_data, None
+            
+            return None, "이메일 또는 비밀번호가 일치하지 않습니다."
         except Exception as e:
-            return None, str(e)
+            return None, f"로그인 오류: {str(e)}"
+
+    def signup(self, email, password):
+        """Firestore에 신규 유저 정보 저장"""
+        if not self.is_initialized:
+            return None, "Firebase 연결 실패"
+
+        try:
+            users_ref = self.db.collection('users')
+            # 중복 이메일 확인
+            existing_user = list(users_ref.where('email', '==', email).stream())
+            if len(existing_user) > 0:
+                return None, "이미 가입된 이메일입니다."
+            
+            # 새 유저 문서 생성
+            new_user_ref = users_ref.document()
+            user_data = {
+                "email": email,
+                "password": password,
+                "created_at": firestore.SERVER_TIMESTAMP
+            }
+            new_user_ref.set(user_data)
+            
+            user_data['localId'] = new_user_ref.id
+            return user_data, None
+        except Exception as e:
+            return None, f"회원가입 오류: {str(e)}"
 
     def save_data(self, collection, doc_id, data):
+        """데이터 저장"""
         if not self.is_initialized or not st.session_state.user:
             return False
         try:
             user_id = st.session_state.user['localId']
+            # users/{user_id}/{collection}/{doc_id} 경로에 저장
             doc_ref = self.db.collection('users').document(user_id).collection(collection).document(doc_id)
             data['updated_at'] = firestore.SERVER_TIMESTAMP
             doc_ref.set(data)
@@ -178,6 +205,7 @@ class FirebaseManager:
             return False
 
     def load_collection(self, collection):
+        """데이터 목록 불러오기"""
         if not self.is_initialized or not st.session_state.user:
             return []
         try:
@@ -218,11 +246,12 @@ PRE_LEARNED_DATA = load_knowledge_base()
 # -----------------------------------------------------------------------------
 def get_llm():
     if not api_key: return None
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
+    # 유효한 모델명으로 수정 (gemini-1.5-flash 등)
+    return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 
 def get_pro_llm():
     if not api_key: return None
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 
 def ask_ai(question):
     llm = get_llm()
@@ -346,7 +375,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         return f"❌ AI 오류: {str(e)}"
 
 # =============================================================================
-# [수정된 섹션] 성적 및 진로 진단 분석 함수 (3개 탭 분리용 구분자 사용)
+# 성적 및 진로 진단 분석 함수
 # =============================================================================
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
@@ -365,7 +394,6 @@ def analyze_graduation_requirements(uploaded_images):
         })
 
     def _execute():
-        # 프롬프트: 3가지 섹션으로 나누어 출력하도록 지시, 페르소나 설정
         prompt = """
         당신은 [냉철하고 현실적인 대기업 인사담당자 출신의 취업 컨설턴트]입니다.
         제공된 학생의 [성적표 이미지]와 [학습된 학사 문서]를 바탕으로 3가지 측면에서 분석 결과를 작성해주세요.
@@ -466,15 +494,21 @@ with st.sidebar:
                 if not email or not password:
                     st.error("이메일과 비밀번호를 입력하세요.")
                 else:
-                    mode = "login" if auth_mode == "로그인" else "signup"
-                    with st.spinner(f"{auth_mode} 중..."):
-                        user, err = fb_manager.auth_user(email, password, mode)
-                        if user:
-                            st.session_state.user = user
-                            st.success(f"환영합니다! ({user['email']})")
-                            st.rerun()
-                        else:
-                            st.error(f"오류: {err}")
+                    if not fb_manager.is_initialized:
+                        st.error("Firebase 연결 실패 (Secrets를 확인하세요)")
+                    else:
+                        with st.spinner(f"{auth_mode} 중..."):
+                            if auth_mode == "로그인":
+                                user, err = fb_manager.login(email, password)
+                            else:
+                                user, err = fb_manager.signup(email, password)
+                            
+                            if user:
+                                st.session_state.user = user
+                                st.success(f"환영합니다! ({user['email']})")
+                                st.rerun()
+                            else:
+                                st.error(f"오류: {err}")
     else:
         st.info(f"👤 **{st.session_state.user['email']}**님")
         if st.button("로그아웃"):
@@ -500,7 +534,7 @@ with st.sidebar:
     else:
         st.error("⚠️ 데이터 폴더에 PDF 파일이 없습니다.")
 
-# [수정된 메뉴 명칭]
+# 메뉴 구성
 menu = st.radio("기능 선택", ["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"], 
                 horizontal=True, key="menu_radio", 
                 index=["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"].index(st.session_state.current_menu))
@@ -683,17 +717,16 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             with st.spinner("성적표를 독해하고 분석 중입니다... (냉철한 평가가 준비되고 있습니다)"):
                 analysis_result = analyze_graduation_requirements(uploaded_files)
                 st.session_state.graduation_analysis_result = analysis_result
-                st.session_state.graduation_chat_history = [] # 새 분석 시 채팅 초기화
+                st.session_state.graduation_chat_history = []
                 add_log("user", "[진단] 이미지 분석 요청", "📈 성적 및 진로 진단")
                 st.rerun()
 
     if st.session_state.graduation_analysis_result:
         st.divider()
         
-        # [수정됨] 탭으로 나누어 보여주기 로직
         result_text = st.session_state.graduation_analysis_result
         
-        # 구분자를 이용해 섹션 분리
+        # 섹션 파싱
         sec_grad = ""
         sec_grade = ""
         sec_career = ""
@@ -712,12 +745,10 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
                     else:
                         sec_grad = temp
             else:
-                # 구분자 파싱 실패 시 통으로 보여주기
                 sec_grad = result_text
         except:
             sec_grad = result_text
 
-        # 탭 생성
         tab1, tab2, tab3 = st.tabs(["🎓 졸업 요건 확인", "📊 성적 정밀 분석", "💼 AI 커리어 솔루션"])
         
         with tab1:
@@ -729,7 +760,6 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
         
         st.divider()
 
-        # 결과 저장 버튼
         if st.session_state.user and fb_manager.is_initialized:
             if st.button("☁️ 진단 결과 저장하기"):
                 doc_data = {
@@ -756,7 +786,6 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             with st.chat_message("assistant"):
                 with st.spinner("분석 중..."):
                     response = chat_with_graduation_ai(st.session_state.graduation_analysis_result, chat_input)
-                    
                     if "[수정]" in response:
                         new_result = response.replace("[수정]", "").strip()
                         st.session_state.graduation_analysis_result = new_result

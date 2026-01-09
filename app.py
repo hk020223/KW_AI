@@ -123,7 +123,7 @@ def run_with_retry(func, *args, **kwargs):
             raise e
 
 # -----------------------------------------------------------------------------
-# [Firebase Manager] Firestore 기반 자체 인증 및 DB 관리
+# [Firebase Manager] Firestore 기반 자체 인증 및 DB 관리 (Identity Toolkit 제거됨)
 # -----------------------------------------------------------------------------
 class FirebaseManager:
     def __init__(self):
@@ -242,16 +242,15 @@ def load_knowledge_base():
 PRE_LEARNED_DATA = load_knowledge_base()
 
 # -----------------------------------------------------------------------------
-# [1] AI 엔진 (수정됨: 확실한 버전 넘버 사용)
+# [1] AI 엔진 (404 오류 방지를 위해 버전 명시)
 # -----------------------------------------------------------------------------
 def get_llm():
     if not api_key: return None
-    # [수정] 구체적인 버전 'gemini-1.5-flash-001' 사용으로 404 에러 방지
+    # [수정] 404 오류 방지를 위해 구체적인 버전 'gemini-1.5-flash-001' 사용
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash-001", temperature=0)
 
 def get_pro_llm():
     if not api_key: return None
-    # [수정] 이미지 분석 모델도 동일하게 구체적인 버전 사용
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash-001", temperature=0)
 
 def ask_ai(question):
@@ -376,7 +375,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         return f"❌ AI 오류: {str(e)}"
 
 # =============================================================================
-# 성적 및 진로 진단 분석 함수
+# [수정된 섹션] 성적 및 진로 진단 분석 함수 (3개 탭 분리용 구분자 사용)
 # =============================================================================
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
@@ -484,7 +483,7 @@ def change_menu(menu_name):
 
 with st.sidebar:
     st.title("🗂️ 활동 로그")
-    # [로그인 UI]
+    # [로그인 UI - Firebase Firestore 직접 이용]
     if st.session_state.user is None:
         with st.expander("🔐 로그인 / 회원가입", expanded=True):
             auth_mode = st.radio("모드 선택", ["로그인", "회원가입"], horizontal=True)
@@ -535,7 +534,7 @@ with st.sidebar:
     else:
         st.error("⚠️ 데이터 폴더에 PDF 파일이 없습니다.")
 
-# 메뉴 구성
+# 메뉴 구성 (메뉴 이름 수정됨)
 menu = st.radio("기능 선택", ["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"], 
                 horizontal=True, key="menu_radio", 
                 index=["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"].index(st.session_state.current_menu))
@@ -727,7 +726,7 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
         
         result_text = st.session_state.graduation_analysis_result
         
-        # 섹션 파싱
+        # 섹션 파싱 (3개 탭 분리)
         sec_grad = ""
         sec_grade = ""
         sec_career = ""
@@ -750,6 +749,7 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
         except:
             sec_grad = result_text
 
+        # 탭 생성
         tab1, tab2, tab3 = st.tabs(["🎓 졸업 요건 확인", "📊 성적 정밀 분석", "💼 AI 커리어 솔루션"])
         
         with tab1:

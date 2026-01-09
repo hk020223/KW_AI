@@ -242,17 +242,15 @@ def load_knowledge_base():
 PRE_LEARNED_DATA = load_knowledge_base()
 
 # -----------------------------------------------------------------------------
-# [1] AI 엔진 (수정됨: 사용자가 요청한 모델명 적용)
+# [1] AI 엔진 (모델명: gemini-1.5-pro 유지)
 # -----------------------------------------------------------------------------
 def get_llm():
     if not api_key: return None
-    # [수정] 사용자가 지정한 모델명 사용
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0)
 
 def get_pro_llm():
     if not api_key: return None
-    # [수정] 사용자가 지정한 모델명 사용
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0)
 
 def ask_ai(question):
     llm = get_llm()
@@ -269,15 +267,17 @@ def ask_ai(question):
             return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# 공통 프롬프트 지시사항
+# [수정된 부분] 공통 프롬프트 지시사항: 요일별 교시 분리 배정 규칙 추가
 COMMON_TIMETABLE_INSTRUCTION = """
 [★★★ 핵심 알고리즘: 3단계 검증 및 필터링 (Strict Verification) ★★★]
 1. **Step 1: 요람(Curriculum) 기반 '수강 대상' 리스트 확정**:
    - PDF 요람 문서에서 **'{major} {grade} {semester}'**에 배정된 **'표준 이수 과목' 목록**을 추출.
 2. **Step 2: 학년 정합성 검사 (Grade Validation)**:
    - 사용자가 선택한 학년({grade})과 시간표의 대상 학년이 일치하지 않으면 과감히 제외.
-3. **Step 3: 시간표 데이터와 정밀 대조 (Exact Match)**:
-   - 위 단계를 통과한 과목만 시간표에 배치. 과목명 완전 일치 필수.
+3. **Step 3: 시간표 데이터와 정밀 대조 및 요일별 교시 엄수 (Exact Match & Split Schedule)**:
+   - 위 단계를 통과한 과목만 시간표에 배치하세요.
+   - **[핵심 규칙] 요일별 교시 분리 배정**: 만약 강의 시간이 **'월3, 수4'**로 되어 있다면, **월요일은 3교시만, 수요일은 4교시만** 채워야 합니다.
+   - **절대** '월3,4' 혹은 '수3,4'처럼 연강으로 임의 확장하거나 빈 시간을 채워넣지 마세요. 데이터에 명시된 교시 외에는 빈카드로 두세요.
 4. **출력 형식 (세로형 HTML Table)**:
    - `table` 태그, `width="100%"`.
    - 행: 1~9교시 (시간 포함), 열: 월~일.

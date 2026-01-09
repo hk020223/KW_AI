@@ -150,13 +150,14 @@ class FirebaseManager:
             return None, "Firebase 연결 실패"
         
         try:
+            # users 컬렉션에서 email과 password가 일치하는 문서 검색
             users_ref = self.db.collection('users')
-            # 평문 비밀번호 비교 (데모용)
+            # 주의: 실제 서비스에서는 password를 해싱하여 저장/비교해야 함
             query = users_ref.where('email', '==', email).where('password', '==', password).stream()
             
             for doc in query:
                 user_data = doc.to_dict()
-                user_data['localId'] = doc.id
+                user_data['localId'] = doc.id  # 문서 ID를 식별자로 사용
                 return user_data, None
             
             return None, "이메일 또는 비밀번호가 일치하지 않습니다."
@@ -170,10 +171,12 @@ class FirebaseManager:
 
         try:
             users_ref = self.db.collection('users')
+            # 중복 이메일 확인
             existing_user = list(users_ref.where('email', '==', email).stream())
             if len(existing_user) > 0:
                 return None, "이미 가입된 이메일입니다."
             
+            # 새 유저 문서 생성
             new_user_ref = users_ref.document()
             user_data = {
                 "email": email,
@@ -193,6 +196,7 @@ class FirebaseManager:
             return False
         try:
             user_id = st.session_state.user['localId']
+            # users/{user_id}/{collection}/{doc_id} 경로에 저장
             doc_ref = self.db.collection('users').document(user_id).collection(collection).document(doc_id)
             data['updated_at'] = firestore.SERVER_TIMESTAMP
             doc_ref.set(data)
@@ -238,16 +242,14 @@ def load_knowledge_base():
 PRE_LEARNED_DATA = load_knowledge_base()
 
 # -----------------------------------------------------------------------------
-# [1] AI 엔진 (수정 사항 1번 반영: 모델명 변경)
+# [1] AI 엔진 (gemini-2.5-flash-preview-09-2025 모델 사용)
 # -----------------------------------------------------------------------------
 def get_llm():
     if not api_key: return None
-    # [수정] 요청하신 모델명 사용
     return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
 
 def get_pro_llm():
     if not api_key: return None
-    # [수정] 요청하신 모델명 사용
     return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
 
 def ask_ai(question):
@@ -374,7 +376,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
         return f"❌ AI 오류: {str(e)}"
 
 # =============================================================================
-# [섹션] 성적 및 진로 진단 분석 함수 (수정 사항 4번 반영)
+# [섹션] 성적 및 진로 진단 분석 함수
 # =============================================================================
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
@@ -393,7 +395,6 @@ def analyze_graduation_requirements(uploaded_images):
         })
 
     def _execute():
-        # [수정] 대기업 JD 매핑 및 실명 거론 지시 추가
         prompt = """
         당신은 [냉철하고 현실적인 대기업 인사담당자 출신의 취업 컨설턴트]입니다.
         제공된 학생의 [성적표 이미지]와 [학습된 학사 문서]를 바탕으로 3가지 측면에서 분석 결과를 작성해주세요.
@@ -421,8 +422,8 @@ def analyze_graduation_requirements(uploaded_images):
         [[SECTION:CAREER]]
         ### 💼 3. AI 커리어 솔루션 (대기업 JD 매칭)
         - **직무 추천:** 학생의 수강 내역(회로 위주, SW 위주 등)을 분석하여 가장 적합한 **구체적인 대기업 직무**를 2~3개 추천하세요. (예: 삼성전자 회로설계, 현대모비스 임베디드SW 등)
-        - **Skill Gap 분석 (현실 팩폭):** 해당 기업/직무의 실제 채용 트렌드(우대사항)와 학생의 현재 스펙(학점, 이수과목)을 비교하여 부족한 점을 냉정하게 꼬집으세요.
-        - **Action Plan:** 합격을 위해 남은 학기에 반드시 들어야 할 전공 과목이나, 당장 준비해야 할 기사 자격증/어학 성적(OPIc 등) 목표치를 제시하세요.
+        - **Skill Gap 분석:** 해당 직무의 시장 요구사항(대기업 채용 기준) 대비 현재 부족한 점을 냉정하게 꼬집으세요.
+        - **Action Plan:** 남은 학기에 반드시 수강해야 할 과목이나, 학교 밖에서 채워야 할 경험(프로젝트, 기사 자격증 등)을 구체적으로 지시하세요.
 
         [학습된 학사 문서]
         """
@@ -482,7 +483,6 @@ def chat_with_graduation_ai(current_analysis, user_input):
 # -----------------------------------------------------------------------------
 # [2] UI 구성
 # -----------------------------------------------------------------------------
-# [수정 사항 3번 반영] 메뉴 이동 함수 수정
 def change_menu(menu_name):
     st.session_state.current_menu = menu_name
 
@@ -516,9 +516,9 @@ with st.sidebar:
                                 st.error(f"오류: {err}")
     else:
         st.info(f"👤 **{st.session_state.user['email']}**님")
-        # [수정 사항 2번 반영] 로그아웃 시 세션 클리어 (데이터 보호 + 화면 리셋)
+        # [수정] 로그아웃 시 세션 클리어 (화면 초기화)
         if st.button("로그아웃"):
-            st.session_state.clear() # 화면의 임시 데이터 모두 삭제
+            st.session_state.clear()
             st.rerun()
             
     st.divider()
@@ -530,11 +530,12 @@ with st.sidebar:
         else:
             for i, log in enumerate(reversed(st.session_state.global_log)):
                 label = f"[{log['time']}] {log['content'][:15]}..."
-                # [수정 사항 3번 반영] 로그 클릭 시 해당 메뉴로 이동
+                # [수정] 로그 클릭 시 라디오 버튼 상태(menu_radio) 강제 동기화
                 if st.button(label, key=f"log_btn_{i}", use_container_width=True):
                     if log['menu']:
-                        st.session_state.current_menu = log['menu'] # 메뉴 상태 변경
-                        st.rerun() # 화면 새로고침하여 메뉴 이동 반영
+                        st.session_state.current_menu = log['menu']
+                        st.session_state["menu_radio"] = log['menu'] # 위젯 Key 강제 업데이트
+                        st.rerun()
     st.divider()
     if PRE_LEARNED_DATA:
          st.success(f"✅ PDF 문서 학습 완료")
@@ -745,7 +746,7 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
         
         result_text = st.session_state.graduation_analysis_result
         
-        # 섹션 파싱 (3개 탭 분리)
+        # 섹션 파싱
         sec_grad = ""
         sec_grade = ""
         sec_career = ""
@@ -768,7 +769,6 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
         except:
             sec_grad = result_text
 
-        # 탭 생성
         tab1, tab2, tab3 = st.tabs(["🎓 졸업 요건 확인", "📊 성적 정밀 분석", "💼 AI 커리어 솔루션"])
         
         with tab1:

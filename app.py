@@ -27,7 +27,6 @@ from firebase_admin import credentials, firestore
 st.set_page_config(page_title="KW-강의마스터 Pro", page_icon="🎓", layout="wide")
 
 # 광운대학교 전체 학과 리스트 (상수)
-# PDF 자료집 기반 전체 학과 포함
 ALL_DEPARTMENTS = [
     "전자융합공학과", "전자공학과", "전자통신공학과", "전기공학과", "전자재료공학과", "로봇학부",
     "소프트웨어학부", "컴퓨터정보공학부", "정보융합학부",
@@ -38,32 +37,58 @@ ALL_DEPARTMENTS = [
 ]
 ALL_DEPARTMENTS.sort()
 
+# [복구] 상세 시간표 생성 지침 (정확도 향상)
+COMMON_TIMETABLE_INSTRUCTION = """
+[★★★ 핵심 알고리즘: 3단계 검증 및 필터링 (Strict Verification) ★★★]
+
+1. **Step 1: 요람(Curriculum) 기반 '수강 대상' 리스트 확정**:
+   - 먼저 PDF 요람 문서에서 **'{major} {grade} {semester}'**에 배정된 **'표준 이수 과목' 목록**을 추출하세요.
+   - **주의:** 'MSC 필수', '공학인증 필수'라고 적혀 있어도, 이 학기(예: 1학년 1학기) 표에 없으면 리스트에 넣지 마세요.
+
+2. **Step 2: 학년 정합성 검사 (Grade Validation)**:
+   - 추출된 과목이 실제 시간표 데이터에서 몇 학년 대상으로 개설되었는지 확인하세요.
+   - **사용자가 선택한 학년({grade})과 시간표의 대상 학년이 일치하지 않으면 과감히 제외하세요.**
+   - (예: 사용자가 1학년인데, 시간표에 '2학년' 대상이라고 적혀있으면 배치 금지)
+
+3. **Step 3: 시간표 데이터와 정밀 대조 (Exact Match)**:
+   - 위 단계를 통과한 과목만 시간표에 배치하세요.
+   - **과목명 완전 일치 필수**: 예: '대학물리학1' vs '대학물리및실험1' 구분.
+
+4. **출력 형식 (세로형 HTML Table)**:
+   - 반드시 **HTML `<table>` 태그**를 사용해라.
+   - **행(Row): 1교시 ~ 9교시** (행 머리글에 시간 포함: 1교시 (09:00~10:15) 등)
+   - **열(Column): 월, 화, 수, 목, 금, 토, 일** (7일 모두 표시)
+   - **스타일 규칙**:
+     - `table` 태그에 `width="100%"` 속성을 주어라.
+     - **같은 과목은 반드시 같은 배경색**을 사용해라. (파스텔톤 권장)
+     - **수업이 없는 빈 시간(공강)은 반드시 흰색 배경**으로 둬라.
+     - 셀 내용: `<b>과목명</b><br><small>교수명 (대상학년)</small>`
+
+5. **온라인 및 원격 강의 처리 (필수 - 표 내부에 포함)**:
+   - 강의 시간이 **'온라인', '원격', 'Cyber', '시간 미지정'** 등이면 **시간표 표(Table)의 맨 마지막 행에 추가**하세요.
+   - **행 제목:** `<b>온라인/기타</b>`
+   - **내용:** 해당되는 모든 과목을 `<b>과목명</b>(교수명)` 형식으로 나열하세요. (요일 열은 합치거나(colspan) 적절히 분배하여 표시)
+   - **절대 표 밖으로 빼지 말고, 테이블의 일부로 포함시키세요.**
+
+6. **출력 순서 고정**:
+   - 1순위: HTML 시간표 표 (온라인 강의 포함)
+   - 2순위: "### ✅ 필수 과목 검증 및 학년 일치 확인" (각 과목별로 '대상 학년'이 맞는지 명시)
+   - 3순위: "### ⚠️ 배치 실패/제외 목록" (학년 불일치로 제외된 과목 포함)
+"""
+
 # CSS 스타일
 st.markdown("""
     <style>
         footer { visibility: hidden; }
-        /* 라디오 버튼을 가로로 배치하고 버튼처럼 보이게 스타일링 */
         div.row-widget.stRadio > div { flex-direction: row; align-items: stretch; }
         div.row-widget.stRadio > div[role="radiogroup"] > label {
-            background-color: #f0f2f6;
-            padding: 10px 20px;
-            border-radius: 10px;
-            margin-right: 10px;
-            border: 1px solid #e0e0e0;
-            cursor: pointer;
-            transition: all 0.3s;
+            background-color: #f0f2f6; padding: 10px 20px; border-radius: 10px; margin-right: 10px; border: 1px solid #e0e0e0; cursor: pointer; transition: all 0.3s;
         }
         div.row-widget.stRadio > div[role="radiogroup"] > label[data-checked="true"] {
-            background-color: #ff4b4b;
-            color: white;
-            border-color: #ff4b4b;
+            background-color: #ff4b4b; color: white; border-color: #ff4b4b;
         }
-        
-        /* 탭 스타일 */
         .stTabs [data-baseweb="tab-list"] { gap: 10px; }
         .stTabs [data-baseweb="tab"] { height: 40px; white-space: pre-wrap; border-radius: 4px; gap: 1px; padding-top: 5px; padding-bottom: 5px; }
-        
-        /* 모바일 최적화 */
         @media only screen and (max-width: 600px) {
             .main .block-container { padding-top: 2rem !important; }
             div[data-testid="stMarkdownContainer"] table { font-size: 10px !important; }
@@ -84,18 +109,19 @@ if not api_key:
 # 세션 상태 초기화
 if "user" not in st.session_state: st.session_state.user = None
 if "global_log" not in st.session_state: st.session_state.global_log = []
-if "shared_context" not in st.session_state: st.session_state.shared_context = "" # 탭 간 맥락 공유용
+if "shared_context" not in st.session_state: st.session_state.shared_context = "" 
 if "grade_json_data" not in st.session_state: st.session_state.grade_json_data = None
-if "graduation_json_data" not in st.session_state: st.session_state.graduation_json_data = None # 졸업요건 데이터 (시각화용)
+if "graduation_json_data" not in st.session_state: st.session_state.graduation_json_data = None 
+if "graduation_analysis_result" not in st.session_state: st.session_state.graduation_analysis_result = "" # 텍스트 리포트용
 if "timetable_result" not in st.session_state: st.session_state.timetable_result = ""
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "timetable_chat_history" not in st.session_state: st.session_state.timetable_chat_history = []
 if "graduation_chat_history" not in st.session_state: st.session_state.graduation_chat_history = []
-if "bookmarks" not in st.session_state: st.session_state.bookmarks = [] # Q&A 보관함
+if "bookmarks" not in st.session_state: st.session_state.bookmarks = [] 
 if "current_menu" not in st.session_state: st.session_state.current_menu = "📈 성적 및 진로 진단"
 
 # -----------------------------------------------------------------------------
-# [Firebase Manager] 데이터 저장/로드 및 인증
+# [Firebase Manager]
 # -----------------------------------------------------------------------------
 class FirebaseManager:
     def __init__(self):
@@ -127,16 +153,15 @@ class FirebaseManager:
             return data, None
         except Exception as e: return None, str(e)
 
-    # 데이터 저장 (성적, 졸업요건 등)
     def save_user_data(self, collection, doc_id, data):
         if not self.is_initialized or not st.session_state.user: return False
         try:
             user_id = st.session_state.user['localId']
+            data['updated_at'] = firestore.SERVER_TIMESTAMP
             self.db.collection('users').document(user_id).collection(collection).document(doc_id).set(data)
             return True
         except: return False
     
-    # 데이터 로드 (단일 문서)
     def load_user_data(self, collection, doc_id):
         if not self.is_initialized or not st.session_state.user: return None
         try:
@@ -145,22 +170,15 @@ class FirebaseManager:
             return doc.to_dict() if doc.exists else None
         except: return None
 
-    # 보관함(Bookmarks) 추가
     def add_bookmark(self, question, answer, tag):
         if not self.is_initialized or not st.session_state.user: return False
         try:
             user_id = st.session_state.user['localId']
-            data = {
-                "question": question,
-                "answer": answer,
-                "tag": tag,
-                "created_at": firestore.SERVER_TIMESTAMP
-            }
+            data = {"question": question, "answer": answer, "tag": tag, "created_at": firestore.SERVER_TIMESTAMP}
             self.db.collection('users').document(user_id).collection('bookmarks').add(data)
             return True
         except: return False
 
-    # 보관함 로드
     def load_bookmarks(self):
         if not self.is_initialized or not st.session_state.user: return []
         try:
@@ -172,14 +190,12 @@ class FirebaseManager:
 fb_manager = FirebaseManager()
 
 # -----------------------------------------------------------------------------
-# [AI 엔진] - ★ Model Name Fixed ★
+# [AI 엔진] - 모델명 수정 (gemini-1.5-flash)
 # -----------------------------------------------------------------------------
 def get_llm(): 
-    # [Fix] gemini-1.5-flash 사용
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0, google_api_key=api_key)
 
 def get_pro_llm(): 
-    # [Fix] gemini-1.5-flash 사용 (이미지 처리 가능)
     return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0, google_api_key=api_key)
 
 @st.cache_resource
@@ -204,8 +220,18 @@ def clean_json_output(text):
         text = text[:-3]
     return text.strip()
 
+def clean_html_output(text):
+    cleaned = text.strip()
+    if cleaned.startswith("```html"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    return cleaned.replace("```html", "").replace("```", "").strip()
+
 # -----------------------------------------------------------------------------
-# [핵심 기능 1] 성적표 분석 (JSON 추출)
+# [기능 1] 성적표 분석 (JSON)
 # -----------------------------------------------------------------------------
 def analyze_grades_structure(uploaded_images):
     llm = get_pro_llm()
@@ -217,13 +243,9 @@ def analyze_grades_structure(uploaded_images):
     
     prompt = """
     성적표 이미지를 분석하여 **반드시 유효한 JSON 형식**으로만 출력하세요. 마크다운 금지.
-    
     {
         "student_info": {"admission_year": "2024", "major": "전자공학과"},
-        "courses": [
-            {"year": "2024", "semester": "1", "type": "전필", "name": "회로이론1", "grade": "A+", "score": 4.5},
-            ...
-        ],
+        "courses": [{"year": "2024", "semester": "1", "type": "전필", "name": "회로이론1", "grade": "A+", "score": 4.5}, ...],
         "strength_keywords": ["회로설계", "임베디드"],
         "weakness_analysis": "전공 기초는 튼튼하나 SW 관련 프로젝트 경험이 부족함."
     }
@@ -235,7 +257,7 @@ def analyze_grades_structure(uploaded_images):
     except: return None
 
 # -----------------------------------------------------------------------------
-# [핵심 기능 2] 졸업 요건 분석 (JSON + 리포트)
+# [기능 2] 졸업 요건 분석 (JSON + 리포트 + 상담)
 # -----------------------------------------------------------------------------
 def analyze_graduation_json(uploaded_images):
     llm = get_pro_llm()
@@ -248,7 +270,6 @@ def analyze_graduation_json(uploaded_images):
     prompt = """
     졸업 요건을 진단하여 **JSON 데이터**와 **분석 리포트(Text)** 두 가지를 모두 포함한 JSON으로 출력하세요.
     [학사 문서]를 참고하여 정확히 계산하세요.
-    
     출력 형식:
     {
         "chart_data": {
@@ -266,8 +287,25 @@ def analyze_graduation_json(uploaded_images):
         return json.loads(clean_json_output(res))
     except: return None
 
+# [복구] 졸업 요건 상담 함수
+def chat_with_graduation_ai(current_analysis, user_input):
+    llm = get_llm()
+    template = """
+    당신은 학사 전문 AI 상담사입니다.
+    [현재 진단 결과] {current_analysis}
+    [사용자 입력] "{user_input}"
+    
+    지시사항:
+    1. 사용자가 정보를 수정/추가(예: "나 캡스톤 들었어")하면, 진단 결과를 수정해서 다시 작성하고 맨 앞에 **[수정]** 태그를 붙이세요.
+    2. 단순 질문(예: "MSC가 뭐야?")이면 친절하게 답변만 하세요.
+    
+    [참고 문헌] {context}
+    """
+    prompt = PromptTemplate(template=template, input_variables=["current_analysis", "user_input", "context"])
+    return (prompt | llm).invoke({"current_analysis": current_analysis, "user_input": user_input, "context": PRE_LEARNED_DATA}).content
+
 # -----------------------------------------------------------------------------
-# [핵심 기능 3] AI 도구 (시간표, 커리어)
+# [기능 3] AI 도구 (커리어, 시간표)
 # -----------------------------------------------------------------------------
 def consult_career_path(job_role, grade_json, context):
     llm = get_llm()
@@ -280,23 +318,24 @@ def consult_career_path(job_role, grade_json, context):
     [지원자 스펙] {student_data}
     [시장 요구사항] {search_result}
     [학교 커리큘럼] {context}
-    
     지원자의 부족한 점(Skill Gap)을 지적하고, 학교 강의 중 무엇을 들어야 할지 구체적으로 추천하세요.
     """
     prompt = PromptTemplate(template=template, input_variables=["student_data", "search_result", "context"])
     return (prompt | llm).invoke({"student_data": json.dumps(grade_json), "search_result": search_res, "context": context}).content
 
+# [복구] 상세 프롬프트 적용된 시간표 생성
 def generate_timetable_ai(major, grade, semester, target, blocked, req, shared_ctx):
     llm = get_llm()
     template = """
-    수강신청 전문가로서 시간표를 작성하세요. 출력은 HTML Table 형식입니다.
+    수강신청 전문가로서 시간표를 작성하세요.
     [학생 정보] {major} {grade} {semester}, 목표 {target}학점
     [공강 시간] {blocked}
     [추가 요구] {req}
     
-    ★★★ [이전 상담 맥락 반영 필수] ★★★
+    ★★★ [이전 상담 맥락 반영] ★★★
     "{shared_ctx}"
-    위 맥락에서 언급된 부족한 역량을 채울 수 있는 과목을 우선 배치하세요.
+    
+    """ + COMMON_TIMETABLE_INSTRUCTION + """
     
     [학습 문서] {context}
     """
@@ -305,16 +344,37 @@ def generate_timetable_ai(major, grade, semester, target, blocked, req, shared_c
         "major": major, "grade": grade, "semester": semester, "target": target, 
         "blocked": blocked, "req": req, "shared_ctx": shared_ctx, "context": PRE_LEARNED_DATA
     }).content
-    return res.replace("```html", "").replace("```", "").strip()
+    return clean_html_output(res)
+
+# [복구] 시간표 상담 함수
+def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester):
+    llm = get_llm()
+    template = """
+    시간표 상담 AI입니다.
+    [현재 시간표] {current_timetable}
+    [사용자 입력] "{user_input}"
+    [학생 정보] {major} {grade} {semester}
+    
+    지시사항:
+    1. 시간표 수정 요청이면 **[수정]** 태그를 붙이고 HTML Table을 다시 작성하세요.
+    """ + COMMON_TIMETABLE_INSTRUCTION + """
+    2. 단순 질문이면 답변만 하세요.
+    
+    [학습 문서] {context}
+    """
+    prompt = PromptTemplate(template=template, input_variables=["current_timetable", "user_input", "major", "grade", "semester", "context"])
+    res = (prompt | llm).invoke({
+        "current_timetable": current_timetable, "user_input": user_input, 
+        "major": major, "grade": grade, "semester": semester, "context": PRE_LEARNED_DATA
+    }).content
+    return res
 
 # -----------------------------------------------------------------------------
 # [UI] 메인 앱
 # -----------------------------------------------------------------------------
-# 1. 사이드바 (로그인, 보관함)
 with st.sidebar:
     st.title("🗂️ 내비게이션")
     
-    # 로그인 처리
     if st.session_state.user is None:
         with st.expander("🔐 로그인 / 회원가입", expanded=True):
             mode = st.radio("모드", ["로그인", "회원가입"], horizontal=True, label_visibility="collapsed")
@@ -324,13 +384,16 @@ with st.sidebar:
                 u, e = fb_manager.auth_user(email, pw, "login" if mode == "로그인" else "signup")
                 if u:
                     st.session_state.user = u
-                    # [데이터 복원]
+                    # 데이터 로드
                     grade_data = fb_manager.load_user_data('grade_data', 'latest')
                     if grade_data: st.session_state.grade_json_data = grade_data
-                    grad_data = fb_manager.load_user_data('graduation_data', 'latest')
-                    if grad_data: st.session_state.graduation_json_data = grad_data
                     
-                    st.success("로그인 성공! 이전 데이터를 불러왔습니다.")
+                    grad_data = fb_manager.load_user_data('graduation_data', 'latest')
+                    if grad_data: 
+                        st.session_state.graduation_json_data = grad_data
+                        if 'report_text' in grad_data: st.session_state.graduation_analysis_result = grad_data['report_text']
+                    
+                    st.success("로그인 성공!")
                     time.sleep(1)
                     st.rerun()
                 else: st.error(e)
@@ -340,9 +403,9 @@ with st.sidebar:
             st.session_state.user = None
             st.session_state.grade_json_data = None
             st.session_state.graduation_json_data = None
+            st.session_state.graduation_analysis_result = ""
             st.rerun()
 
-    # 보관함 (Bookmarks)
     if st.session_state.user:
         st.divider()
         st.subheader("📂 Q&A 보관함")
@@ -354,102 +417,96 @@ with st.sidebar:
                 st.write(f"**A:** {bm['answer']}")
                 st.caption(f"Tag: {bm['tag']}")
 
-# 2. 메인 페이지 - 라디오 버튼 메뉴 (UI 복구)
+# 메인 페이지
 st.title("🎓 KW-강의마스터 Pro")
-
-# 이전 스타일의 라디오 버튼 메뉴
 menu_options = ["📈 성적 및 진로 진단", "📅 스마트 시간표", "🤖 AI 학사 지식인"]
 menu = st.radio("기능 선택", menu_options, horizontal=True, label_visibility="collapsed")
 
 # -----------------------------------------------------------------------------
-# MENU 1: 성적 및 진로 진단 (서브 탭 적용)
+# MENU 1: 성적 및 진로 진단
 # -----------------------------------------------------------------------------
 if menu == "📈 성적 및 진로 진단":
     st.header("📈 성적 분석 및 진로 설계")
-    st.caption("성적표를 기반으로 강점을 분석하고 졸업 요건과 진로를 설계합니다.")
-    
     sub_tabs = st.tabs(["📊 성적 분석", "🎓 졸업 요건 확인", "🚀 AI 커리어 솔루션"])
     
-    # 1-1. 성적 분석
+    # 1. 성적 분석
     with sub_tabs[0]:
-        st.markdown("##### 📄 성적표 업로드 (데이터는 자동 저장됩니다)")
+        st.markdown("##### 📄 성적표 업로드")
         uploaded_grades = st.file_uploader("성적표 이미지", accept_multiple_files=True, key="grade_upl")
-        
-        if uploaded_grades and st.button("분석 시작"):
-            with st.spinner("데이터 추출 중..."):
+        if uploaded_grades and st.button("분석 시작", key="anlz_btn"):
+            with st.spinner("분석 중..."):
                 data = analyze_grades_structure(uploaded_grades)
                 if data:
                     st.session_state.grade_json_data = data
-                    # [맥락 저장]
-                    if "weakness_analysis" in data:
-                        st.session_state.shared_context = data["weakness_analysis"]
-                    # [DB 저장]
+                    if "weakness_analysis" in data: st.session_state.shared_context = data["weakness_analysis"]
                     fb_manager.save_user_data('grade_data', 'latest', data)
                     st.rerun()
 
         if st.session_state.grade_json_data:
             d = st.session_state.grade_json_data
             st.success(f"학번: {d.get('student_info',{}).get('admission_year')} | 전공: {d.get('student_info',{}).get('major')}")
-            
-            # 맥락 공유 표시
-            if st.session_state.shared_context:
-                st.info(f"💡 **AI 진단(맥락):** {st.session_state.shared_context}")
-
-            # 강점 키워드
+            if st.session_state.shared_context: st.info(f"💡 **AI 진단(맥락):** {st.session_state.shared_context}")
             st.write("🔥 **나의 강점:** " + " ".join([f"`{k}`" for k in d.get("strength_keywords", [])]))
-            
-            # 성적 그래프
             df = pd.DataFrame(d.get("courses", []))
             if not df.empty:
                 df['score'] = pd.to_numeric(df['score'], errors='coerce')
                 st.line_chart(df.groupby('year')['score'].mean())
                 with st.expander("데이터 원본"): st.json(d)
 
-    # 1-2. 졸업 요건 (도넛 차트 시각화)
+    # 2. 졸업 요건 (도넛 차트 + 상담 복구)
     with sub_tabs[1]:
-        st.markdown("##### 🎓 졸업 요건 달성률 (시각화)")
+        st.markdown("##### 🎓 졸업 요건 달성률")
         grad_files = st.file_uploader("졸업 요건용 성적표", accept_multiple_files=True, key="grad_upl")
-        
-        if grad_files and st.button("졸업 요건 진단"):
+        if grad_files and st.button("졸업 요건 진단", key="grad_btn"):
             with st.spinner("분석 중..."):
                 res = analyze_graduation_json(grad_files)
                 if res:
                     st.session_state.graduation_json_data = res
+                    st.session_state.graduation_analysis_result = res.get("report_text", "")
+                    st.session_state.graduation_chat_history = []
                     fb_manager.save_user_data('graduation_data', 'latest', res)
                     st.rerun()
         
+        # 차트 표시
         if st.session_state.graduation_json_data:
             data = st.session_state.graduation_json_data.get("chart_data", {})
-            report = st.session_state.graduation_json_data.get("report_text", "")
-            
-            # 도넛 차트 그리기
             if data:
                 fig = make_subplots(rows=1, cols=4, specs=[[{'type':'domain'}]*4], 
                                     subplot_titles=['총 학점', '전공 필수', '전공 선택', '교양'])
-                
-                labels = ["이수", "미이수"]
-                colors = ['#4CAF50', '#E0E0E0']
-                
                 keys = ['total', 'major_req', 'major_sel', 'liberal']
                 for i, key in enumerate(keys):
                     curr = data.get(key, {}).get('earned', 0)
                     req = data.get(key, {}).get('required', 100)
-                    rem = max(0, req - curr)
-                    
-                    fig.add_trace(go.Pie(labels=labels, values=[curr, rem], hole=.6, 
-                                         marker_colors=colors, textinfo='none'), 1, i+1)
-                    
-                    # 중앙 텍스트 (달성률)
-                    percent = int((curr / req) * 100) if req > 0 else 0
-                    fig.add_annotation(text=f"<b>{percent}%</b>", x=[0.11, 0.37, 0.63, 0.89][i], y=0.5, 
-                                       showarrow=False, font_size=20)
-
+                    fig.add_trace(go.Pie(labels=["이수", "미이수"], values=[curr, max(0, req-curr)], hole=.6, marker_colors=['#4CAF50', '#E0E0E0'], textinfo='none'), 1, i+1)
+                    fig.add_annotation(text=f"<b>{int((curr/req)*100 if req>0 else 0)}%</b>", x=[0.11, 0.37, 0.63, 0.89][i], y=0.5, showarrow=False, font_size=20)
                 fig.update_layout(height=250, margin=dict(t=30, b=0, l=0, r=0), showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown(report)
+        # 리포트 및 상담
+        if st.session_state.graduation_analysis_result:
+            st.markdown(st.session_state.graduation_analysis_result)
+            st.divider()
+            st.subheader("💬 졸업 요건 상담소")
+            for msg in st.session_state.graduation_chat_history:
+                with st.chat_message(msg["role"]): st.markdown(msg["content"])
+            
+            if chat_input := st.chat_input("예: 캡스톤디자인 들었는데 왜 미이수야?", key="grad_chat"):
+                st.session_state.graduation_chat_history.append({"role": "user", "content": chat_input})
+                with st.chat_message("user"): st.write(chat_input)
+                with st.chat_message("assistant"):
+                    with st.spinner("분석 중..."):
+                        resp = chat_with_graduation_ai(st.session_state.graduation_analysis_result, chat_input)
+                        if "[수정]" in resp:
+                            new_res = resp.replace("[수정]", "").strip()
+                            st.session_state.graduation_analysis_result = new_res
+                            st.write("리포트를 수정했습니다. 위 내용을 확인해주세요.")
+                            st.session_state.graduation_chat_history.append({"role": "assistant", "content": "리포트 수정 완료."})
+                            st.rerun()
+                        else:
+                            st.markdown(resp)
+                            st.session_state.graduation_chat_history.append({"role": "assistant", "content": resp})
 
-    # 1-3. 커리어 솔루션
+    # 3. 커리어
     with sub_tabs[2]:
         st.markdown("##### 🚀 AI 채용 담당자 컨설팅")
         job = st.text_input("희망 직무")
@@ -459,27 +516,22 @@ if menu == "📈 성적 및 진로 진단":
                 with st.spinner("검색 및 분석 중..."):
                     res = consult_career_path(job, st.session_state.grade_json_data, PRE_LEARNED_DATA)
                     st.markdown(res)
-                    # 여기서 나온 조언도 맥락에 추가 가능
                     st.session_state.shared_context += f"\n(진로 조언: {job} 관련 역량 보강 필요)"
 
 # -----------------------------------------------------------------------------
-# MENU 2: 스마트 시간표 (전체 학과 + 맥락 반영)
+# MENU 2: 스마트 시간표 (상세 프롬프트 + 상담 복구)
 # -----------------------------------------------------------------------------
 elif menu == "📅 스마트 시간표":
     st.header("📅 맥락 기반 AI 시간표")
-    
-    if st.session_state.shared_context:
-        st.info(f"💡 **반영된 맥락:** {st.session_state.shared_context}")
+    if st.session_state.shared_context: st.info(f"💡 **반영된 맥락:** {st.session_state.shared_context}")
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        # [수정 5] 전체 학과 리스트 적용
         major = st.selectbox("학과 선택", ALL_DEPARTMENTS)
         grade = st.selectbox("학년", ["1학년", "2학년", "3학년", "4학년"])
         semester = st.selectbox("학기", ["1학기", "2학기"])
         target = st.number_input("목표 학점", 9, 24, 18)
         req = st.text_area("추가 요구사항")
-        
     with col2:
         st.caption("공강 시간 선택 (체크 해제 시 공강)")
         times = ["1교시", "2교시", "3교시", "4교시", "5교시", "6교시", "7교시", "8교시", "9교시"]
@@ -496,43 +548,50 @@ elif menu == "📅 스마트 시간표":
 
     if st.session_state.timetable_result:
         st.markdown(st.session_state.timetable_result, unsafe_allow_html=True)
+        st.divider()
+        st.subheader("💬 시간표 상담소")
+        for msg in st.session_state.timetable_chat_history:
+            with st.chat_message(msg["role"]): st.markdown(msg["content"], unsafe_allow_html=True)
+        
+        if chat_input := st.chat_input("예: 1교시 빼줘"):
+            st.session_state.timetable_chat_history.append({"role": "user", "content": chat_input})
+            with st.chat_message("user"): st.write(chat_input)
+            with st.chat_message("assistant"):
+                with st.spinner("수정 중..."):
+                    resp = chat_with_timetable_ai(st.session_state.timetable_result, chat_input, major, grade, semester)
+                    if "[수정]" in resp:
+                        new_tt = clean_html_output(resp.replace("[수정]", ""))
+                        st.session_state.timetable_result = new_tt
+                        st.write("시간표를 업데이트했습니다.")
+                        st.session_state.timetable_chat_history.append({"role": "assistant", "content": "수정 완료."})
+                        st.rerun()
+                    else:
+                        st.markdown(resp)
+                        st.session_state.timetable_chat_history.append({"role": "assistant", "content": resp})
 
 # -----------------------------------------------------------------------------
 # MENU 3: AI 학사 지식인 (보관함 기능)
 # -----------------------------------------------------------------------------
 elif menu == "🤖 AI 학사 지식인":
     st.subheader("🤖 무엇이든 물어보세요")
-    
-    # 채팅 히스토리 표시
     for i, msg in enumerate(st.session_state.chat_history):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            
-            # [수정 4] 질문-답변 세트 저장 버튼
-            # assistant 메시지이고, 바로 앞이 user 메시지일 때 저장 버튼 표시
             if msg["role"] == "assistant" and i > 0 and st.session_state.chat_history[i-1]["role"] == "user":
                 if st.button("💾 보관함 저장", key=f"save_{i}"):
-                    q = st.session_state.chat_history[i-1]["content"]
-                    a = msg["content"]
-                    if fb_manager.add_bookmark(q, a, "지식인"):
-                        st.toast("보관함에 저장되었습니다!", icon="✅")
-                    else:
-                        st.toast("로그인이 필요합니다.", icon="⚠️")
+                    if fb_manager.add_bookmark(st.session_state.chat_history[i-1]["content"], msg["content"], "지식인"):
+                        st.toast("저장 완료!", icon="✅")
+                    else: st.toast("로그인 필요", icon="⚠️")
 
     if user_input := st.chat_input("질문 입력"):
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"): st.markdown(user_input)
-        
         with st.chat_message("assistant"):
             with st.spinner("생성 중..."):
-                # 맥락이 있다면 프롬프트에 살짝 추가 가능
-                q_with_ctx = user_input
-                if st.session_state.shared_context:
-                    q_with_ctx = f"[사용자 상황: {st.session_state.shared_context}] \n질문: {user_input}"
-                
+                q_ctx = user_input
+                if st.session_state.shared_context: q_ctx = f"[상황: {st.session_state.shared_context}] \n{user_input}"
                 chain = PromptTemplate.from_template("문서: {ctx}\n질문: {q}") | get_llm()
-                response = chain.invoke({"ctx": PRE_LEARNED_DATA, "q": q_with_ctx}).content
+                response = chain.invoke({"ctx": PRE_LEARNED_DATA, "q": q_ctx}).content
                 st.markdown(response)
-        
         st.session_state.chat_history.append({"role": "assistant", "content": response})
         st.rerun()

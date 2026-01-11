@@ -112,12 +112,12 @@ def clean_html_output(text):
     return cleaned.replace("```html", "").replace("```", "").strip()
 
 # ★ 재시도(Retry) 로직 ★
-def run_with_retry(func, *args, **args):
+def run_with_retry(func, *args, **kwargs):
     max_retries = 5
     delays = [1, 2, 4, 8, 16]
     for i in range(max_retries):
         try:
-            return func(*args, **args)
+            return func(*args, **kwargs)
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "503" in error_msg:
@@ -875,6 +875,4 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
-
-
 

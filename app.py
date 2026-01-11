@@ -709,12 +709,25 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                         else:
                             st.error("저장 실패")
 
-            st.markdown(st.session_state.timetable_result, unsafe_allow_html=True)
+            # --------------------------------------------------------------------------------
+            # [수정] 표와 설명을 분리하여 중간에 강의계획서 뷰어 삽입
+            # --------------------------------------------------------------------------------
+            
+            # HTML Table과 Description 분리
+            full_result = st.session_state.timetable_result
+            if "</table>" in full_result:
+                parts = full_result.split("</table>", 1)
+                table_part = parts[0] + "</table>"
+                desc_part = parts[1]
+            else:
+                table_part = full_result
+                desc_part = ""
 
-            # --------------------------------------------------------------------------------
-            # [수정] 강의계획서 감지 및 인페이지 뷰어 (AI 요약 및 팝업 제거)
-            # --------------------------------------------------------------------------------
-            # 1. HTML에서 과목명 및 교수명 추출
+            # 1. HTML 표 출력
+            st.markdown(table_part, unsafe_allow_html=True)
+
+            # 2. 강의계획서 감지 및 인페이지 뷰어 (중간 삽입)
+            # 2-1. HTML에서 과목명 및 교수명 추출 (table_part에서만 추출)
             def extract_course_info(html_code):
                 if not html_code: return []
                 # Pattern: <b>Subject</b><br><small>Professor (Grade)</small>
@@ -728,7 +741,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                     courses.append({"subject": subj.strip(), "professor": prof})
                 return courses
 
-            # 2. 파일 매칭 확인
+            # 2-2. 파일 매칭 확인
             def match_syllabus_files(courses):
                 matched_list = []
                 if not os.path.exists("data/syllabus"):
@@ -762,12 +775,12 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                         })
                 return matched_list
 
-            # 3. 뷰어 선택 콜백 함수
+            # 2-3. 뷰어 선택 콜백 함수
             def set_syllabus_viewer(file_path, display_label):
                 st.session_state.selected_syllabus = {"path": file_path, "label": display_label}
 
-            # 4. UI 렌더링 (버튼 및 인페이지 뷰어)
-            extracted_courses = extract_course_info(st.session_state.timetable_result)
+            # 2-4. UI 렌더링 (버튼 및 인페이지 뷰어)
+            extracted_courses = extract_course_info(table_part)
             matched_courses = match_syllabus_files(extracted_courses)
 
             if matched_courses:
@@ -798,6 +811,12 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                             st.text_area("강의계획서 원문", full_text, height=400, disabled=True)
                         except Exception as e:
                             st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+                st.divider()
+
+            # 3. 나머지 설명 텍스트 출력
+            if desc_part:
+                st.markdown(desc_part, unsafe_allow_html=True)
+            
             # --------------------------------------------------------------------------------
 
             # [신규 저장 버튼] - 불러온 게 아니라 새로 만든 경우 or 복사본 저장

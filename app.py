@@ -310,7 +310,7 @@ def get_vectorstore():
 VECTOR_STORE = get_vectorstore()
 
 # RAG 검색 함수
-def get_relevant_context(query, k=5):
+def get_relevant_context(query, k=20):
     """질문과 유사한 문서 조각 k개를 검색하여 텍스트로 반환"""
     if not VECTOR_STORE:
         return ""

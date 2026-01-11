@@ -112,12 +112,12 @@ def clean_html_output(text):
     return cleaned.replace("```html", "").replace("```", "").strip()
 
 # ★ 재시도(Retry) 로직 ★
-def run_with_retry(func, *args, **kwargs):
+def run_with_retry(func, *args, **args):
     max_retries = 5
     delays = [1, 2, 4, 8, 16]
     for i in range(max_retries):
         try:
-            return func(*args, **kwargs)
+            return func(*args, **args)
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "503" in error_msg:
@@ -652,10 +652,25 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             st.markdown("#### 1️⃣ 기본 정보")
             # [기존 학과 리스트 유지]
             kw_departments = [
-                "전자융합공학과", "전자공학과", "전자통신공학과", "전기공학과", 
-                "전자재료공학과", "로봇학부", "컴퓨터정보공학부", "소프트웨어학부", 
-                "정보융합학부", "건축학과", "건축공학과", "화학공학과", "환경공학과"
-            ]
+    # 전자정보공과대학
+    "전자공학과", "전자통신공학과", "전자융합공학과", "전기공학과", "전자재료공학과", "반도체시스템공학부", "로봇학부",
+    # 인공지능융합대학
+    "컴퓨터정보공학부", "소프트웨어학부", "정보융합학부", "지능형로봇학과",
+    # 공과대학
+    "건축학과", "건축공학과", "화학공학과", "환경공학과",
+    # 자연과학대학
+    "수학과", "전자바이오물리학과", "화학과", "스포츠융합과학과", "정보콘텐츠학과",
+    # 인문사회과학대학
+    "국어국문학과", "영어산업학과", "미디어커뮤니케이션학부", "산업심리학과", "동북아문화산업학부",
+    # 정책법학대학
+    "행정학과", "법학부", "국제학부", "자산관리학과",
+    # 경영대학
+    "경영학부", "국제통상학부",
+    # 참빛인재대학 (재직자)
+    "금융부동산법무학과", "게임콘텐츠학과", "스마트전기전자학과", "스포츠상담재활학과",
+    # 자율전공 및 기타
+    "자율전공학부(자연)", "자율전공학부(인문)", "인제니움학부대학"
+]
             major = st.selectbox("학과", kw_departments, key="tt_major")
             c1, c2 = st.columns(2)
             grade = c1.selectbox("학년", ["1학년", "2학년", "3학년", "4학년"], key="tt_grade")
@@ -860,5 +875,6 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+
 
 

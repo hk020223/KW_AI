@@ -104,6 +104,10 @@ if "selected_syllabus" not in st.session_state:
 if "retake_candidates" not in st.session_state:
     st.session_state.retake_candidates = []
 
+# [추가] 사용자 설정(Preferences) 유지용 세션
+if "user_prefs" not in st.session_state:
+    st.session_state.user_prefs = {}
+
 def add_log(role, content, menu_context=None):
     timestamp = datetime.datetime.now().strftime("%H:%M")
     st.session_state.global_log.append({
@@ -240,6 +244,31 @@ class FirebaseManager:
             return [{"id": doc.id, **doc.to_dict()} for doc in docs]
         except:
             return []
+
+    # [추가] 사용자 설정(Preferences) 저장
+    def save_user_prefs(self, prefs):
+        if not self.is_initialized or not st.session_state.user: return
+        try:
+            user_id = st.session_state.user['localId']
+            # DataFrame은 JSON 저장 불가하므로 리스트로 변환
+            save_prefs = prefs.copy()
+            if isinstance(save_prefs.get('schedule_df'), pd.DataFrame):
+                save_prefs['schedule_df'] = save_prefs['schedule_df'].values.tolist()
+            
+            self.db.collection('users').document(user_id).collection('settings').document('preferences').set(save_prefs)
+        except Exception as e:
+            print(f"Error saving prefs: {e}")
+
+    # [추가] 사용자 설정(Preferences) 로드
+    def load_user_prefs(self):
+        if not self.is_initialized or not st.session_state.user: return {}
+        try:
+            user_id = st.session_state.user['localId']
+            doc = self.db.collection('users').document(user_id).collection('settings').document('preferences').get()
+            if doc.exists:
+                return doc.to_dict()
+            return {}
+        except: return {}
 
 fb_manager = FirebaseManager()
 
@@ -571,6 +600,10 @@ with st.sidebar:
                             # [로그인 성공 시] clear() 호출 안 함 -> 화면 상태 유지
                             if user:
                                 st.session_state.user = user
+                                # [추가] 로그인 성공 시 사용자 설정 로드
+                                prefs = fb_manager.load_user_prefs()
+                                if prefs:
+                                    st.session_state.user_prefs = prefs
                                 st.success(f"환영합니다! ({user['email']})")
                                 st.rerun()
                             else:
@@ -892,11 +925,22 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     # 자율전공 및 기타
     "자율전공학부(자연)", "자율전공학부(인문)", "인제니움학부대학"
 ]
-            major = st.selectbox("학과", kw_departments, key="tt_major")
+            # [수정] 사용자 설정(Preferences) 반영
+            defaults = st.session_state.user_prefs
+            
+            def_major_idx = kw_departments.index(defaults.get('major')) if defaults.get('major') in kw_departments else 0
+            major = st.selectbox("학과", kw_departments, index=def_major_idx, key="tt_major")
+            
             c1, c2 = st.columns(2)
-            grade = c1.selectbox("학년", ["1학년", "2학년", "3학년", "4학년"], key="tt_grade")
-            semester = c2.selectbox("학기", ["1학기", "2학기"], key="tt_semester")
-            target_credit = st.number_input("목표 학점", 9, 24, 18, key="tt_credit")
+            grade_opts = ["1학년", "2학년", "3학년", "4학년"]
+            def_grade_idx = grade_opts.index(defaults.get('grade')) if defaults.get('grade') in grade_opts else 0
+            grade = c1.selectbox("학년", grade_opts, index=def_grade_idx, key="tt_grade")
+            
+            sem_opts = ["1학기", "2학기"]
+            def_sem_idx = sem_opts.index(defaults.get('semester')) if defaults.get('semester') in sem_opts else 0
+            semester = c2.selectbox("학기", sem_opts, index=def_sem_idx, key="tt_semester")
+            
+            target_credit = st.number_input("목표 학점", 9, 24, defaults.get('target_credit', 18), key="tt_credit")
             
             # [수정] 성적/진단 결과 반영 체크박스 제거 -> 멀티 셀렉트로 대체
             # 재수강 후보군 불러오기
@@ -910,7 +954,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 help="성적 진단에서 C+ 이하로 식별된 과목들입니다. 이번 학기에 재수강할 과목을 체크하세요."
             )
             
-            requirements = st.text_area("추가 요구사항", placeholder="예: 전공 필수 챙겨줘", key="tt_req")
+            requirements = st.text_area("추가 요구사항", value=defaults.get('requirements', ''), placeholder="예: 전공 필수 챙겨줘", key="tt_req")
 
         with col2:
             st.markdown("#### 2️⃣ 공강 시간 설정")
@@ -921,8 +965,17 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 "7교시": "18:00~19:15", "8교시": "19:25~20:40", "9교시": "20:50~22:05"
             }
             schedule_index = [f"{k} ({v})" for k, v in kw_times.items()]
-            if "init_schedule_df" not in st.session_state:
-                st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
+            
+            # [수정] 공강 설정 복원
+            if 'init_schedule_df' not in st.session_state:
+                if 'schedule_df' in defaults and defaults['schedule_df']:
+                    try:
+                        st.session_state.init_schedule_df = pd.DataFrame(defaults['schedule_df'], index=schedule_index, columns=["월", "화", "수", "목", "금"])
+                    except:
+                        st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
+                else:
+                    st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
+
             edited_schedule = st.data_editor(
                 st.session_state.init_schedule_df,
                 column_config={
@@ -938,6 +991,19 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             )
 
         if st.button("시간표 생성하기 ✨", type="primary", use_container_width=True):
+            # [추가] 사용자 설정 저장 (Persistence)
+            current_prefs = {
+                "major": major,
+                "grade": grade,
+                "semester": semester,
+                "target_credit": target_credit,
+                "requirements": requirements,
+                "schedule_df": edited_schedule # DataEditor 결과는 바로 DataFrame
+            }
+            st.session_state.user_prefs = current_prefs
+            if st.session_state.user:
+                fb_manager.save_user_prefs(current_prefs)
+
             blocked_times = []
             for day in ["월", "화", "수", "목", "금"]:
                 for idx, period_label in enumerate(edited_schedule.index):
@@ -1015,7 +1081,18 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
                                              format_func=lambda x: datetime.datetime.fromtimestamp(int(x['id'])).strftime('%Y-%m-%d %H:%M'))
                 if st.button("진단 결과 불러오기"):
                     st.session_state.graduation_analysis_result = selected_diag['result']
-                    st.success("진단 결과를 불러왔습니다!")
+                    
+                    # [추가] 재수강 태그 파싱 및 세션 저장 (Re-parsing)
+                    match = re.search(r"\[\[RETAKE: (.*?)\]\]", selected_diag['result'])
+                    if match:
+                        retake_str = match.group(1).strip()
+                        if retake_str and retake_str != "NONE":
+                            candidates = [x.strip() for x in retake_str.split(',')]
+                            st.session_state.retake_candidates = candidates
+                        else:
+                            st.session_state.retake_candidates = []
+                    
+                    st.success("진단 결과를 불러왔습니다! 스마트 시간표 탭에서 재수강 과목을 확인할 수 있습니다.")
                     st.rerun()
 
     uploaded_files = st.file_uploader("캡처 이미지 업로드 (여러 장 가능)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)

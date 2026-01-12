@@ -100,6 +100,10 @@ if "current_timetable_meta" not in st.session_state:
 if "selected_syllabus" not in st.session_state:
     st.session_state.selected_syllabus = None
 
+# [추가] 재수강 대상 과목 리스트 관리
+if "retake_candidates" not in st.session_state:
+    st.session_state.retake_candidates = []
+
 def add_log(role, content, menu_context=None):
     timestamp = datetime.datetime.now().strftime("%H:%M")
     st.session_state.global_log.append({
@@ -289,29 +293,32 @@ def ask_ai(question):
             return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# 공통 프롬프트 지시사항
+# [수정] 공통 프롬프트 지시사항 업데이트 (학정번호 검증 추가)
 COMMON_TIMETABLE_INSTRUCTION = """
-[★★★ 핵심 알고리즘: 3단계 검증 및 필터링 (Strict Verification) ★★★]
-1. **Step 1: 요람(Curriculum) 기반 '수강 대상' 리스트 확정**:
+[★★★ 핵심 알고리즘: 4단계 검증 및 필터링 (Strict Verification) ★★★]
+1. **Step 1: 재수강 및 필수 과목 우선 배정**:
+   - 사용자가 지정한 '필수 포함 과목(재수강 등)'을 최우선으로 배치한다.
+2. **Step 2: 요람(Curriculum) 기반 후보군 추출**:
    - PDF 요람 문서에서 **'{major} {grade} {semester}'**에 배정된 **'표준 이수 과목' 목록**을 추출.
-2. **Step 2: 학년 정합성 검사 (Grade Validation)**:
-   - 사용자가 선택한 학년({grade})과 시간표의 대상 학년이 일치하지 않으면 과감히 제외.
-3. **Step 3: 시간표 데이터와 정밀 대조 (Exact Match)**:
+3. **Step 3: 학정번호 기반 난이도 중복 검증 (Critical)**:
+   - **수강신청 자료집 규정 준수**: 교양 과목의 경우, **학정번호의 5번째 자리(난이도 코드)**가 동일한 과목을 한 영역에서 2개 이상 수강할 수 없다.
+   - 예: 학정번호가 `0000-1-xxxx`인 과목(난이도 1)을 이미 배정했다면, 다른 `xxxx-1-xxxx` 과목은 배정하지 말고 제외하라.
+4. **Step 4: 시간표 정밀 대조 (Exact Match)**:
    - 위 단계를 통과한 과목만 시간표에 배치. 과목명 완전 일치 필수.
    - **[핵심 규칙] 요일별 교시 분리 배정**: 만약 강의 시간이 **'월3, 수4'**로 되어 있다면, **월요일은 3교시만, 수요일은 4교시만** 채워야 합니다.
    - **절대** '월3,4' 혹은 '수3,4'처럼 연강으로 임의 확장하거나 빈 시간을 채워넣지 마세요.
-4. **출력 형식 (세로형 HTML Table)**:
+5. **출력 형식 (세로형 HTML Table)**:
    - `table` 태그, `width="100%"`.
    - 행: 1~9교시 (시간 포함), 열: 월~일.
    - 같은 과목 같은 배경색, 공강은 흰색.
    - 셀 내용: `<b>과목명</b><br><small>교수명 (대상학년)</small>`
-5. **온라인 및 원격 강의 처리**:
+6. **온라인 및 원격 강의 처리**:
    - 표 맨 마지막 행에 `<b>온라인/기타</b>` 행 추가하여 포함.
-6. **출력 순서**: HTML 표 -> 필수 과목 검증 -> 제외 목록
+7. **출력 순서**: HTML 표 -> 필수 과목 검증 -> 제외 목록
 """
 
-# [수정] 진단 결과를 입력받아 우선순위를 배정하는 로직 추가
-def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_desc, requirements, diagnosis_context=None):
+# [수정] generate_timetable_ai 함수 (재수강 리스트 반영 및 진단 컨텍스트 제거)
+def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_desc, requirements, must_include_subjects):
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
     def _execute():
@@ -326,17 +333,13 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
         - 추가요구: {requirements}
         """
 
-        # 진단 결과가 있을 경우 우선순위 로직 추가
-        if diagnosis_context:
+        # 재수강(필수 포함) 과목 반영
+        if must_include_subjects:
             base_template += f"""
-            [성적 및 진로 진단 결과 (반영 필수)]
-            {diagnosis_context}
-
-            [★★★ 개인화 우선순위 배정 규칙 (Priority Logic) ★★★]
-            1. **1순위 (Must):** 해당 학년/학기에 지정된 표준 이수 필수 과목 (졸업 필수).
-            2. **2순위 (Should):** 위 [성적 및 진로 진단 결과]에서 **'재수강 필요'** 혹은 **'미이수 필수'**로 지적된 과목.
-            3. **3순위 (Could):** 위 [성적 및 진로 진단 결과]의 **'직무 솔루션'**에서 추천한 과목.
-            4. **제외 (Exclude):** 위 진단 결과에서 **이미 이수한 것**으로 확인된 과목 (단, 재수강 대상은 제외).
+            [★★★ 필수 포함 과목 (재수강/사용자 지정) ★★★]
+            다음 과목들은 **무조건** 시간표에 포함시켜야 해:
+            {', '.join(must_include_subjects)}
+            - 이 과목들과 시간이 겹치는 다른 과목은 과감히 제외해.
             """
         
         # 공통 지시사항 및 문서 연결
@@ -421,6 +424,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
 # =============================================================================
 # [섹션] 성적 및 진로 진단 분석 함수
 # =============================================================================
+# [수정] analyze_graduation_requirements 함수 (재수강 태그 추출 로직 추가)
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
     if not llm: return "⚠️ API Key 오류"
@@ -445,10 +449,11 @@ def analyze_graduation_requirements(uploaded_images):
         **[핵심 지시사항 - 중요]**
         - 단순히 "열심히 하세요" 같은 뜬구름 잡는 조언은 하지 마십시오.
         - **반드시** 삼성전자, SK하이닉스, 현대자동차, 네이버, 카카오 등 **실제 한국 주요 대기업의 실명과 구체적인 직무명(JD)**을 언급하며 조언하세요.
-        - 예: "삼성전자 DS부문 메모리사업부의 공정기술 직무에서는 반도체공학 A학점 이상을 선호하지만, 현재 학생의 성적은 B+이므로..." 와 같이 구체적으로 비교하세요.
-
+        
         **[출력 형식]**
         반드시 아래의 구분자(`[[SECTION: ...]]`)를 사용하여 답변을 3개의 구역으로 명확히 나누세요.
+        그리고 **맨 마지막 줄**에 재수강이 필요한 과목(C+ 이하, F, NP 등. 단 B0 이상은 제외)의 목록을 다음 태그 형식으로 출력하세요:
+        `[[RETAKE: 과목명1, 과목명2, ...]]` (재수강 대상이 없으면 `[[RETAKE: NONE]]`)
 
         [[SECTION:GRADUATION]]
         ### 🎓 1. 졸업 요건 정밀 진단
@@ -480,7 +485,19 @@ def analyze_graduation_requirements(uploaded_images):
         return response.content
 
     try:
-        return run_with_retry(_execute)
+        result_text = run_with_retry(_execute)
+        
+        # [추가] 재수강 과목 파싱 및 세션 저장
+        match = re.search(r"\[\[RETAKE: (.*?)\]\]", result_text)
+        if match:
+            retake_str = match.group(1).strip()
+            if retake_str and retake_str != "NONE":
+                candidates = [x.strip() for x in retake_str.split(',')]
+                st.session_state.retake_candidates = candidates
+            else:
+                st.session_state.retake_candidates = []
+        
+        return result_text
     except Exception as e:
          if "RESOURCE_EXHAUSTED" in str(e):
             return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
@@ -881,8 +898,18 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             semester = c2.selectbox("학기", ["1학기", "2학기"], key="tt_semester")
             target_credit = st.number_input("목표 학점", 9, 24, 18, key="tt_credit")
             
-            # [수정] 성적/진단 결과 반영 체크박스 추가
-            use_diagnosis = st.checkbox("☑️ 성적/진로 진단 결과 반영하기 (재수강, 직무 추천 등)", value=True, key="tt_use_diag")
+            # [수정] 성적/진단 결과 반영 체크박스 제거 -> 멀티 셀렉트로 대체
+            # 재수강 후보군 불러오기
+            candidate_subjects = st.session_state.get("retake_candidates", [])
+            
+            must_include = st.multiselect(
+                "📋 재수강 신청할 과목 선택 (진단 결과 기반)",
+                options=candidate_subjects,
+                default=candidate_subjects, # 기본적으로 다 선택
+                key="tt_must_include",
+                help="성적 진단에서 C+ 이하로 식별된 과목들입니다. 이번 학기에 재수강할 과목을 체크하세요."
+            )
+            
             requirements = st.text_area("추가 요구사항", placeholder="예: 전공 필수 챙겨줘", key="tt_req")
 
         with col2:
@@ -918,22 +945,9 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                         blocked_times.append(f"{day}요일 {period_label}")
             blocked_desc = ", ".join(blocked_times) if blocked_times else "없음"
             
-            # [수정] 데이터 파이프라인 (Silent Fetch 포함)
-            diagnosis_context = ""
-            if use_diagnosis:
-                # 1. 현재 세션에 진단 결과가 있으면 사용
-                if st.session_state.graduation_analysis_result:
-                    diagnosis_context = st.session_state.graduation_analysis_result
-                # 2. 없지만 로그인 유저라면 DB에서 Silent Fetch
-                elif st.session_state.user and fb_manager.is_initialized:
-                    saved_diags = fb_manager.load_collection('graduation_diagnosis')
-                    if saved_diags:
-                        diagnosis_context = saved_diags[0]['result'] # 가장 최근 결과
-                        st.toast("최근 저장된 진단 결과를 불러와 반영했습니다.", icon="✅")
-
             with st.spinner("선수과목 확인 및 시간표 조합 중... (최대 1분 소요될 수 있습니다)"):
-                # [수정] diagnosis_context 전달
-                result = generate_timetable_ai(major, grade, semester, target_credit, blocked_desc, requirements, diagnosis_context)
+                # [수정] generate_timetable_ai 호출 시 must_include 전달
+                result = generate_timetable_ai(major, grade, semester, target_credit, blocked_desc, requirements, must_include)
                 st.session_state.timetable_result = result
                 st.session_state.timetable_chat_history = []
                 # 새로 생성했으므로 메타데이터 초기화 (저장 전)
@@ -1099,4 +1113,3 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
-

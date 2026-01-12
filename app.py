@@ -324,27 +324,40 @@ def ask_ai(question):
             return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# [수정] 공통 프롬프트 지시사항 업데이트 (5단계 검증 필터)
+# [수정] 공통 프롬프트 지시사항 업데이트 (7대 검증 및 출력 제어)
 COMMON_TIMETABLE_INSTRUCTION = """
-[★★★ 핵심 알고리즘: 5단계 검증 및 필터링 (Strict Validation) ★★★]
-1. **Filter 1: 기이수 과목 원천 배제 (Exclude)**:
-   - 사용자가 이미 이수한 과목(`completed_subjects`)은 시간표 후보에서 **아예 삭제**한다.
-   - 단, 사용자가 재수강을 원해서 체크한 과목(`must_include_subjects`)은 예외로 포함한다.
-2. **Filter 2: 재수강 과목 최우선 고정 (Must-Include)**:
-   - `must_include_subjects`에 있는 과목은 **1순위**로 시간표에 배치한다.
-   - 이들과 시간이 겹치는 다른 과목은 과감히 제외한다.
-3. **Filter 3: 학정번호(난이도) 및 교양 중복 규정 (Regulation)**:
-   - **수강신청 자료집 규정 준수**: 교양 과목의 경우, **학정번호의 5번째 자리(난이도 코드)**가 동일한 과목을 한 영역에서 2개 이상 수강할 수 없다.
-   - 예: 학정번호가 `0000-1-xxxx`인 과목(난이도 1)을 이미 배정했다면, 다른 `xxxx-1-xxxx` 과목은 배정하지 말고 제외하라.
-   - 사이버 강의 학점 제한 등 자료집의 명시적 제약을 따른다.
-4. **Filter 4: 학년/학기 정합성 및 선수과목 체크 (Curriculum)**:
-   - PDF 요람 문서에서 **'{major} {grade} {semester}'**에 해당하는 **필수 이수 과목** 위주로 채운다.
-   - 만약 선수과목이 필요한 과목이 배정된다면, "이전 학기에 선수과목을 이수했는지 확인하라"는 경고를 남긴다.
-5. **Filter 5: 시간 및 공강 충돌 (Conflict)**:
-   - 사용자 공강 시간이나 과목 간 시간 충돌 시 제외한다.
-6. **출력 형식**:
-   - `table` 태그 (세로형 HTML Table).
-   - 표 아래에 **[⚠️ 선수과목 체크리스트]** 섹션을 별도로 출력하여, 배정된 과목들의 선수과목 정보를 요약한다.
+[★★★ 7대 핵심 검증 및 필터링 규칙 (7 Strict Verification Rules) ★★★]
+1. **⚠️ 요일/교시 분리 배정 (Time Slot 1:1 Mapping - CRITICAL)**:
+   - 강의 시간이 '월1, 수2'라면 **월요일 1교시**와 **수요일 2교시**에만 배치하라.
+   - **절대** '월1,2' 또는 '수1,2' 처럼 연강으로 임의 해석하거나 뻥튀기하지 마라.
+   - 콤마(,)로 구분된 시간은 각각 개별 타임슬롯이다.
+
+2. **🥇 사용자 지정 재수강 (User Override)**:
+   - `must_include_subjects`에 있는 과목은 시간이 겹치지 않는 한 **무조건 0순위**로 고정한다.
+
+3. **🚫 기이수 과목 원천 배제 (Exclusion)**:
+   - `completed_subjects` 리스트에 있는 과목은 후보군에서 **즉시 삭제**한다. (단, 재수강 목록에 있다면 예외)
+
+4. **📚 수강신청 자료집 기반 로드맵 (Curriculum Core)**:
+   - 단순 요람이 아닌, **[수강신청 자료집] PDF에 명시된 해당 학과/학년의 필수 이수 과목 및 전공 로드맵**을 최우선으로 배치한다.
+   - 전공 필수 -> 전공 선택 -> 교양 순으로 채운다.
+
+5. **🔢 학정번호 난이도 중복 방지 (Regulation)**:
+   - 교양 과목 배정 시, **학정번호 5번째 자리(난이도 코드)**를 확인한다.
+   - 동일한 교양 영역 내에서 같은 난이도 코드를 가진 과목이 2개 이상 들어가지 않도록 하나를 탈락시킨다.
+
+6. **🛑 공강 및 물리적 시간 충돌 (Physical Conflict)**:
+   - 사용자 공강 시간(`blocked_times`)이나, 이미 배정된 과목과 시간이 겹치면 제외한다.
+
+7. **🔗 선수과목 이수 여부 확인 (Prerequisite Check)**:
+   - 로드맵상 과목을 배치할 때 선수과목 이수 여부가 불분명하면 하단에 경고를 남긴다.
+
+[★★★ 출력 형식 (Output Format) - 엄수 ★★★]
+1. **서론, 제목, 인사말 절대 금지.** 오직 결과만 출력하라.
+2. **HTML Table**: `<table>...</table>` 태그로 시작하는 세로형 시간표를 가장 먼저 출력하라.
+3. **검증 리포트 태그**: 테이블 출력이 끝나면, `[[REPORT_START]]`와 `[[REPORT_END]]` 사이에 **검증 현황**을 요약해서 출력하라.
+   - 내용: 1) 기이수 과목 제외 건수, 2) 재수강 과목 반영 여부, 3) **최종 배정된 교양 과목 및 난이도 현황(긍정적 리스트업)**
+4. **선수과목 체크리스트**: 맨 마지막에 `[⚠️ 선수과목 체크리스트]` 섹션을 만들어라.
 """
 
 # [수정] generate_timetable_ai 함수 (기이수 리스트 반영)
@@ -352,31 +365,26 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
     def _execute():
-        # 기본 템플릿
         base_template = """
-        너는 대학교 수강신청 전문가야. 오직 제공된 [학습된 문서]의 텍스트 데이터에 기반해서만 시간표를 짜줘.
+        너는 대학교 수강신청 전문가야. 오직 제공된 [학습된 문서]의 텍스트 데이터와 [수강신청 자료집]에 기반해서만 시간표를 짜줘.
+        
         [학생 정보]
         - 소속: {major}
         - 학년/학기: {grade} {semester}
         - 목표: {target_credits}학점
         - 공강 필수: {blocked_times}
         - 추가요구: {requirements}
-        """
-
-        # 기이수 및 재수강 과목 반영
-        base_template += f"""
-        [★★★ 이수 내역 및 재수강 정보 ★★★]
+        
+        [★★★ 이수 내역 및 재수강 정보 (Input Data) ★★★]
         1. **기이수 과목 (제외 대상):** {', '.join(completed_subjects) if completed_subjects else "없음"}
-           - 위 과목들은 이미 들었으므로 시간표에 넣지 마. (단, 아래 재수강 목록에 있다면 포함 가능)
         2. **필수 포함 과목 (재수강):** {', '.join(must_include_subjects) if must_include_subjects else "없음"}
-           - 이 과목들은 무조건 1순위로 포함해.
         """
         
-        # 공통 지시사항 및 문서 연결
         base_template += COMMON_TIMETABLE_INSTRUCTION + """
         [추가 지시사항]
-        - 진단 결과가 없거나 부족할 경우, 사용자는 이전 학년의 선수 과목을 모두 정상 이수했다고 가정하고 **표준 커리큘럼(필수 과목)** 위주로 시간표를 구성해.
+        - 진단 결과가 없거나 부족할 경우, 사용자는 이전 학년의 선수 과목을 모두 정상 이수했다고 가정하고 **자료집 상의 표준 커리큘럼** 위주로 시간표를 구성해.
         - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** 그냥 Raw HTML 텍스트로 출력해라.
+        
         [학습된 문서]
         {context}
         """
@@ -768,42 +776,47 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                             st.error("저장 실패")
 
             # --------------------------------------------------------------------------------
-            # [수정] 표와 설명을 분리하여 중간에 강의계획서 뷰어 삽입
+            # [수정] 결과 파싱 및 출력 로직 개선 (Table -> Syllabus -> Report -> Checklist)
             # --------------------------------------------------------------------------------
-            
-            # HTML Table과 Description 분리
             full_result = st.session_state.timetable_result
+            
+            # 1. HTML Table 분리
             if "</table>" in full_result:
                 parts = full_result.split("</table>", 1)
                 table_part = parts[0] + "</table>"
-                desc_part = parts[1]
+                remaining_part = parts[1]
             else:
                 table_part = full_result
-                desc_part = ""
+                remaining_part = ""
 
-            # 1. HTML 표 출력
+            # 2. 검증 리포트 분리
+            if "[[REPORT_START]]" in remaining_part and "[[REPORT_END]]" in remaining_part:
+                pre_report, report_chunk = remaining_part.split("[[REPORT_START]]", 1)
+                report_body, post_report = report_chunk.split("[[REPORT_END]]", 1)
+                report_text = report_body.strip()
+                checklist_text = pre_report + post_report
+            else:
+                report_text = ""
+                checklist_text = remaining_part
+
+            # [UI 렌더링 순서]
+            # 1) 시간표 출력
             st.markdown(table_part, unsafe_allow_html=True)
 
-            # 2. 강의계획서 감지 및 인페이지 뷰어 (중간 삽입)
-            # 2-1. HTML에서 과목명 및 교수명 추출 (table_part에서만 추출)
+            # 2) 강의계획서 인페이지 뷰어 (중간 삽입)
             def extract_course_info(html_code):
                 if not html_code: return []
-                # Pattern: <b>Subject</b><br><small>Professor (Grade)</small>
                 matches = re.findall(r"<b>(.*?)</b><br><small>(.*?)</small>", html_code)
                 courses = []
                 for subj, small_content in matches:
-                    if "(" in small_content:
-                        prof = small_content.split("(")[0].strip()
-                    else:
-                        prof = small_content.strip()
+                    if "(" in small_content: prof = small_content.split("(")[0].strip()
+                    else: prof = small_content.strip()
                     courses.append({"subject": subj.strip(), "professor": prof})
                 return courses
 
-            # 2-2. 파일 매칭 확인
             def match_syllabus_files(courses):
                 matched_list = []
-                if not os.path.exists("data/syllabus"):
-                    return []
+                if not os.path.exists("data/syllabus"): return []
                 seen = set()
                 for c in courses:
                     subj = c['subject']
@@ -811,69 +824,52 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                     key = f"{subj}_{prof}"
                     if key in seen: continue
                     seen.add(key)
-                    
                     file_v1 = f"data/syllabus/{subj}_{prof}.txt"
                     file_v2 = f"data/syllabus/{subj}.txt"
-                    
                     final_file = None
                     display_label = ""
-                    
                     if os.path.exists(file_v1):
-                        final_file = file_v1
-                        display_label = f"{subj} ({prof})"
+                        final_file = file_v1; display_label = f"{subj} ({prof})"
                     elif os.path.exists(file_v2):
-                        final_file = file_v2
-                        display_label = f"{subj}"
-                        
+                        final_file = file_v2; display_label = f"{subj}"
                     if final_file:
-                        matched_list.append({
-                            "subject": subj,
-                            "file_path": final_file,
-                            "display_label": display_label
-                        })
+                        matched_list.append({"subject": subj, "file_path": final_file, "display_label": display_label})
                 return matched_list
 
-            # 2-3. 뷰어 선택 콜백 함수
             def set_syllabus_viewer(file_path, display_label):
                 st.session_state.selected_syllabus = {"path": file_path, "label": display_label}
 
-            # 2-4. UI 렌더링 (버튼 및 인페이지 뷰어)
             extracted_courses = extract_course_info(table_part)
             matched_courses = match_syllabus_files(extracted_courses)
 
             if matched_courses:
                 st.divider()
                 st.markdown("##### 📚 강의계획서 확인")
-                # 버튼 나열
                 cols = st.columns(len(matched_courses) + 2)
                 for i, match in enumerate(matched_courses):
-                    cols[i].button(
-                        f"📄 {match['display_label']}", 
-                        key=f"btn_syl_{i}",
-                        on_click=set_syllabus_viewer,
-                        args=(match['file_path'], match['display_label'])
-                    )
+                    cols[i].button(f"📄 {match['display_label']}", key=f"btn_syl_{i}", on_click=set_syllabus_viewer, args=(match['file_path'], match['display_label']))
                 
-                # [인페이지 뷰어] 선택된 강의계획서가 있으면 아래에 바로 표시
                 if st.session_state.selected_syllabus:
                     with st.container(border=True):
                         c1, c2 = st.columns([8, 1])
                         c1.subheader(f"📄 {st.session_state.selected_syllabus['label']}")
                         if c2.button("❌ 닫기", key="close_syl_viewer"):
-                            st.session_state.selected_syllabus = None
-                            st.rerun()
-
+                            st.session_state.selected_syllabus = None; st.rerun()
                         try:
-                            with open(st.session_state.selected_syllabus['path'], "r", encoding="utf-8") as f:
-                                full_text = f.read()
+                            with open(st.session_state.selected_syllabus['path'], "r", encoding="utf-8") as f: full_text = f.read()
                             st.text_area("강의계획서 원문", full_text, height=400, disabled=True)
-                        except Exception as e:
-                            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+                        except Exception as e: st.error(f"오류: {e}")
                 st.divider()
 
-            # 3. 나머지 설명 텍스트 출력
-            if desc_part:
-                st.markdown(desc_part, unsafe_allow_html=True)
+            # 3) 검증 리포트 (Expander)
+            if report_text:
+                with st.expander("🔍 시간표 생성 검증 리포트 (클릭하여 확인)", expanded=False):
+                    st.info("AI가 시간표 생성 과정에서 수행한 검증 및 배정 현황입니다.")
+                    st.markdown(report_text)
+
+            # 4) 나머지 텍스트 (선수과목 체크리스트 등)
+            if checklist_text.strip():
+                st.markdown(checklist_text, unsafe_allow_html=True)
             
             # --------------------------------------------------------------------------------
 

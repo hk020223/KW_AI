@@ -100,9 +100,11 @@ if "current_timetable_meta" not in st.session_state:
 if "selected_syllabus" not in st.session_state:
     st.session_state.selected_syllabus = None
 
-# [추가] 재수강 대상 과목 리스트 관리
+# [추가] 재수강 대상 과목 및 기이수 과목 리스트 관리
 if "retake_candidates" not in st.session_state:
     st.session_state.retake_candidates = []
+if "completed_subjects" not in st.session_state:
+    st.session_state.completed_subjects = []
 
 # [추가] 사용자 설정(Preferences) 유지용 세션
 if "user_prefs" not in st.session_state:
@@ -322,32 +324,31 @@ def ask_ai(question):
             return "⚠️ **잠시만요!** 사용량이 많아 AI가 숨을 고르고 있습니다. 1분 뒤에 다시 시도해주세요."
         return f"❌ AI 오류: {str(e)}"
 
-# [수정] 공통 프롬프트 지시사항 업데이트 (학정번호 검증 추가)
+# [수정] 공통 프롬프트 지시사항 업데이트 (5단계 검증 필터)
 COMMON_TIMETABLE_INSTRUCTION = """
-[★★★ 핵심 알고리즘: 4단계 검증 및 필터링 (Strict Verification) ★★★]
-1. **Step 1: 재수강 및 필수 과목 우선 배정**:
-   - 사용자가 지정한 '필수 포함 과목(재수강 등)'을 최우선으로 배치한다.
-2. **Step 2: 요람(Curriculum) 기반 후보군 추출**:
-   - PDF 요람 문서에서 **'{major} {grade} {semester}'**에 배정된 **'표준 이수 과목' 목록**을 추출.
-3. **Step 3: 학정번호 기반 난이도 중복 검증 (Critical)**:
+[★★★ 핵심 알고리즘: 5단계 검증 및 필터링 (Strict Validation) ★★★]
+1. **Filter 1: 기이수 과목 원천 배제 (Exclude)**:
+   - 사용자가 이미 이수한 과목(`completed_subjects`)은 시간표 후보에서 **아예 삭제**한다.
+   - 단, 사용자가 재수강을 원해서 체크한 과목(`must_include_subjects`)은 예외로 포함한다.
+2. **Filter 2: 재수강 과목 최우선 고정 (Must-Include)**:
+   - `must_include_subjects`에 있는 과목은 **1순위**로 시간표에 배치한다.
+   - 이들과 시간이 겹치는 다른 과목은 과감히 제외한다.
+3. **Filter 3: 학정번호(난이도) 및 교양 중복 규정 (Regulation)**:
    - **수강신청 자료집 규정 준수**: 교양 과목의 경우, **학정번호의 5번째 자리(난이도 코드)**가 동일한 과목을 한 영역에서 2개 이상 수강할 수 없다.
    - 예: 학정번호가 `0000-1-xxxx`인 과목(난이도 1)을 이미 배정했다면, 다른 `xxxx-1-xxxx` 과목은 배정하지 말고 제외하라.
-4. **Step 4: 시간표 정밀 대조 (Exact Match)**:
-   - 위 단계를 통과한 과목만 시간표에 배치. 과목명 완전 일치 필수.
-   - **[핵심 규칙] 요일별 교시 분리 배정**: 만약 강의 시간이 **'월3, 수4'**로 되어 있다면, **월요일은 3교시만, 수요일은 4교시만** 채워야 합니다.
-   - **절대** '월3,4' 혹은 '수3,4'처럼 연강으로 임의 확장하거나 빈 시간을 채워넣지 마세요.
-5. **출력 형식 (세로형 HTML Table)**:
-   - `table` 태그, `width="100%"`.
-   - 행: 1~9교시 (시간 포함), 열: 월~일.
-   - 같은 과목 같은 배경색, 공강은 흰색.
-   - 셀 내용: `<b>과목명</b><br><small>교수명 (대상학년)</small>`
-6. **온라인 및 원격 강의 처리**:
-   - 표 맨 마지막 행에 `<b>온라인/기타</b>` 행 추가하여 포함.
-7. **출력 순서**: HTML 표 -> 필수 과목 검증 -> 제외 목록
+   - 사이버 강의 학점 제한 등 자료집의 명시적 제약을 따른다.
+4. **Filter 4: 학년/학기 정합성 및 선수과목 체크 (Curriculum)**:
+   - PDF 요람 문서에서 **'{major} {grade} {semester}'**에 해당하는 **필수 이수 과목** 위주로 채운다.
+   - 만약 선수과목이 필요한 과목이 배정된다면, "이전 학기에 선수과목을 이수했는지 확인하라"는 경고를 남긴다.
+5. **Filter 5: 시간 및 공강 충돌 (Conflict)**:
+   - 사용자 공강 시간이나 과목 간 시간 충돌 시 제외한다.
+6. **출력 형식**:
+   - `table` 태그 (세로형 HTML Table).
+   - 표 아래에 **[⚠️ 선수과목 체크리스트]** 섹션을 별도로 출력하여, 배정된 과목들의 선수과목 정보를 요약한다.
 """
 
-# [수정] generate_timetable_ai 함수 (재수강 리스트 반영 및 진단 컨텍스트 제거)
-def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_desc, requirements, must_include_subjects):
+# [수정] generate_timetable_ai 함수 (기이수 리스트 반영)
+def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_desc, requirements, must_include_subjects, completed_subjects):
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
     def _execute():
@@ -362,18 +363,19 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
         - 추가요구: {requirements}
         """
 
-        # 재수강(필수 포함) 과목 반영
-        if must_include_subjects:
-            base_template += f"""
-            [★★★ 필수 포함 과목 (재수강/사용자 지정) ★★★]
-            다음 과목들은 **무조건** 시간표에 포함시켜야 해:
-            {', '.join(must_include_subjects)}
-            - 이 과목들과 시간이 겹치는 다른 과목은 과감히 제외해.
-            """
+        # 기이수 및 재수강 과목 반영
+        base_template += f"""
+        [★★★ 이수 내역 및 재수강 정보 ★★★]
+        1. **기이수 과목 (제외 대상):** {', '.join(completed_subjects) if completed_subjects else "없음"}
+           - 위 과목들은 이미 들었으므로 시간표에 넣지 마. (단, 아래 재수강 목록에 있다면 포함 가능)
+        2. **필수 포함 과목 (재수강):** {', '.join(must_include_subjects) if must_include_subjects else "없음"}
+           - 이 과목들은 무조건 1순위로 포함해.
+        """
         
         # 공통 지시사항 및 문서 연결
         base_template += COMMON_TIMETABLE_INSTRUCTION + """
         [추가 지시사항]
+        - 진단 결과가 없거나 부족할 경우, 사용자는 이전 학년의 선수 과목을 모두 정상 이수했다고 가정하고 **표준 커리큘럼(필수 과목)** 위주로 시간표를 구성해.
         - **HTML 코드를 마크다운 코드 블록(```html)으로 감싸지 마라.** 그냥 Raw HTML 텍스트로 출력해라.
         [학습된 문서]
         {context}
@@ -453,7 +455,7 @@ def chat_with_timetable_ai(current_timetable, user_input, major, grade, semester
 # =============================================================================
 # [섹션] 성적 및 진로 진단 분석 함수
 # =============================================================================
-# [수정] analyze_graduation_requirements 함수 (재수강 태그 추출 로직 추가)
+# [수정] analyze_graduation_requirements 함수 (기이수/재수강 태그 추출 로직 추가)
 def analyze_graduation_requirements(uploaded_images):
     llm = get_pro_llm()
     if not llm: return "⚠️ API Key 오류"
@@ -475,14 +477,13 @@ def analyze_graduation_requirements(uploaded_images):
         당신은 [냉철하고 현실적인 대기업 인사담당자 출신의 취업 컨설턴트]입니다.
         제공된 학생의 [성적표 이미지]와 [학습된 학사 문서]를 바탕으로 3가지 측면에서 분석 결과를 작성해주세요.
         
-        **[핵심 지시사항 - 중요]**
-        - 단순히 "열심히 하세요" 같은 뜬구름 잡는 조언은 하지 마십시오.
-        - **반드시** 삼성전자, SK하이닉스, 현대자동차, 네이버, 카카오 등 **실제 한국 주요 대기업의 실명과 구체적인 직무명(JD)**을 언급하며 조언하세요.
+        **[핵심 지시사항]**
+        - 분석 내용은 기존과 동일하게 상세히 작성하세요.
+        - **맨 마지막 줄**에 아래 두 가지 정보를 태그 형식으로 반드시 출력하세요.
         
-        **[출력 형식]**
-        반드시 아래의 구분자(`[[SECTION: ...]]`)를 사용하여 답변을 3개의 구역으로 명확히 나누세요.
-        그리고 **맨 마지막 줄**에 재수강이 필요한 과목(C+ 이하, F, NP 등. 단 B0 이상은 제외)의 목록을 다음 태그 형식으로 출력하세요:
-        `[[RETAKE: 과목명1, 과목명2, ...]]` (재수강 대상이 없으면 `[[RETAKE: NONE]]`)
+        1. 재수강 필요 과목 (C+ 이하, F, NP 등. B0 이상 제외): `[[RETAKE: 과목1, 과목2...]]`
+        2. 기이수 과목 (이미 학점을 받은 모든 과목): `[[COMPLETED: 과목1, 과목2...]]`
+        (해당사항 없으면 NONE 입력)
 
         [[SECTION:GRADUATION]]
         ### 🎓 1. 졸업 요건 정밀 진단
@@ -516,15 +517,24 @@ def analyze_graduation_requirements(uploaded_images):
     try:
         result_text = run_with_retry(_execute)
         
-        # [추가] 재수강 과목 파싱 및 세션 저장
-        match = re.search(r"\[\[RETAKE: (.*?)\]\]", result_text)
-        if match:
-            retake_str = match.group(1).strip()
+        # [수정] 태그 파싱 및 세션 저장
+        # 1. Retake
+        match_retake = re.search(r"\[\[RETAKE: (.*?)\]\]", result_text)
+        if match_retake:
+            retake_str = match_retake.group(1).strip()
             if retake_str and retake_str != "NONE":
-                candidates = [x.strip() for x in retake_str.split(',')]
-                st.session_state.retake_candidates = candidates
+                st.session_state.retake_candidates = [x.strip() for x in retake_str.split(',')]
             else:
                 st.session_state.retake_candidates = []
+        
+        # 2. Completed
+        match_completed = re.search(r"\[\[COMPLETED: (.*?)\]\]", result_text)
+        if match_completed:
+            comp_str = match_completed.group(1).strip()
+            if comp_str and comp_str != "NONE":
+                st.session_state.completed_subjects = [x.strip() for x in comp_str.split(',')]
+            else:
+                st.session_state.completed_subjects = []
         
         return result_text
     except Exception as e:
@@ -532,48 +542,32 @@ def analyze_graduation_requirements(uploaded_images):
             return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
          return f"❌ AI 오류: {str(e)}"
 
-# 성적/진로 상담 및 수정 함수 (페르소나 유지)
-def chat_with_graduation_ai(current_analysis, user_input):
-    llm = get_llm()
-    def _execute():
-        template = """
-        당신은 냉철하고 독설적인 'AI 취업 컨설턴트'입니다.
-        학생의 성적 및 진로 진단 결과는 다음과 같습니다:
-        
-        [현재 진단 결과]
-        {current_analysis}
-
-        [사용자 입력]
-        "{user_input}"
-
-        [지시사항]
-        - 사용자의 질문에 대해 현실적이고 직설적으로 답변하세요. 위로는 필요 없습니다.
-        - 정보 수정 요청(예: "나 이 과목 들었어")이 들어오면 `[수정]` 태그를 붙이고 전체 진단 결과를 업데이트하세요.
-        - **기업 채용 관점**에서 답변하세요. "이 과목은 삼성전자가 좋아합니다/신경 안 씁니다" 식으로 설명하세요.
-        
-        [참고 문헌]
-        {context}
-        """
-        prompt = PromptTemplate(template=template, input_variables=["current_analysis", "user_input", "context"])
-        chain = prompt | llm
-        return chain.invoke({
-            "current_analysis": current_analysis,
-            "user_input": user_input,
-            "context": PRE_LEARNED_DATA
-        }).content
-
-    try:
-        return run_with_retry(_execute)
-    except Exception as e:
-        if "RESOURCE_EXHAUSTED" in str(e):
-            return "⚠️ **사용량 초과**: 잠시 후 다시 시도해주세요."
-        return f"❌ AI 오류: {str(e)}"
-
 # -----------------------------------------------------------------------------
 # [2] UI 구성
 # -----------------------------------------------------------------------------
 def change_menu(menu_name):
     st.session_state.current_menu = menu_name
+
+# [추가] 데이터 자동 저장 콜백 함수 (Persistence)
+def update_prefs():
+    # 현재 위젯의 값들을 user_prefs 세션에 저장
+    prefs = {
+        "major": st.session_state.tt_major,
+        "grade": st.session_state.tt_grade,
+        "semester": st.session_state.tt_semester,
+        "target_credit": st.session_state.tt_credit,
+        "requirements": st.session_state.tt_req,
+        "schedule_df": st.session_state.get("tt_editor", None) # DataEditor 상태
+    }
+    # 멀티셀렉트 값도 저장
+    if "tt_must_include" in st.session_state:
+        prefs["must_include"] = st.session_state.tt_must_include
+
+    st.session_state.user_prefs = prefs
+    
+    # 로그인 상태라면 DB에도 저장
+    if st.session_state.user:
+        fb_manager.save_user_prefs(prefs)
 
 with st.sidebar:
     st.title("🗂️ 활동 로그")
@@ -681,7 +675,7 @@ if st.session_state.current_menu == "🤖 AI 학사 지식인":
 elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     st.subheader("📅 AI 맞춤형 시간표 설계")
     
-    # [수정] 탭 이동 간 데이터 유지를 위한 세션 동기화 (화면 그리기 전 강제 주입)
+    # [수정] 탭 이동 간 데이터 유지를 위한 세션 동기화
     if st.session_state.user_prefs:
         prefs = st.session_state.user_prefs
         # 위젯 key에 값이 아직 없거나 초기화된 경우 복원
@@ -695,26 +689,25 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             st.session_state.tt_credit = prefs["target_credit"]
         if "tt_req" not in st.session_state and "requirements" in prefs:
             st.session_state.tt_req = prefs["requirements"]
+        if "tt_must_include" not in st.session_state and "must_include" in prefs:
+            # 단, retake_candidates에 있는 값만 복원 가능
+            valid_opts = [x for x in prefs["must_include"] if x in st.session_state.retake_candidates]
+            st.session_state.tt_must_include = valid_opts
 
     # [시간표 불러오기 및 관리 섹션 (UI 개편)]
     if st.session_state.user and fb_manager.is_initialized:
         saved_tables = fb_manager.load_collection('timetables')
         
-        # 데이터 전처리: 필드가 없는 경우 기본값 할당
+        # 데이터 전처리
         fav_tables = []
         archive_tables = []
         
         for t in saved_tables:
-            # 기본 이름과 즐겨찾기 상태 설정
-            if 'name' not in t:
-                t['name'] = t['created_at'].strftime('%Y-%m-%d 시간표')
-            if 'is_favorite' not in t:
-                t['is_favorite'] = False
+            if 'name' not in t: t['name'] = t['created_at'].strftime('%Y-%m-%d 시간표')
+            if 'is_favorite' not in t: t['is_favorite'] = False
             
-            if t['is_favorite']:
-                fav_tables.append(t)
-            else:
-                archive_tables.append(t)
+            if t['is_favorite']: fav_tables.append(t)
+            else: archive_tables.append(t)
         
         # [1] 즐겨찾기 (Quick Access)
         if fav_tables:
@@ -756,7 +749,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
         with timetable_area.container():
             st.markdown("### 🗓️ 내 시간표")
 
-            # [시간표 관리자 툴바] - 불러온 시간표가 있을 때만 표시
+            # [시간표 관리자 툴바]
             current_meta = st.session_state.get("current_timetable_meta", {})
             if current_meta and st.session_state.user and fb_manager.is_initialized:
                 with st.container(border=True):
@@ -884,7 +877,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             
             # --------------------------------------------------------------------------------
 
-            # [신규 저장 버튼] - 불러온 게 아니라 새로 만든 경우 or 복사본 저장
+            # [신규 저장 버튼]
             if st.session_state.user and fb_manager.is_initialized:
                 st.caption("현재 보고 있는 시간표를 **새로운 항목**으로 저장하려면 아래 버튼을 누르세요.")
                 if st.button("☁️ 현재 시간표를 새 이름으로 저장"):
@@ -940,24 +933,23 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     # 자율전공 및 기타
     "자율전공학부(자연)", "자율전공학부(인문)", "인제니움학부대학"
 ]
-            # [수정] 사용자 설정(Preferences) 반영
+            # [수정] 사용자 설정(Preferences) 반영 및 on_change 콜백 연결
             defaults = st.session_state.user_prefs
             
             def_major_idx = kw_departments.index(defaults.get('major')) if defaults.get('major') in kw_departments else 0
-            major = st.selectbox("학과", kw_departments, index=def_major_idx, key="tt_major")
+            major = st.selectbox("학과", kw_departments, index=def_major_idx, key="tt_major", on_change=update_prefs)
             
             c1, c2 = st.columns(2)
             grade_opts = ["1학년", "2학년", "3학년", "4학년"]
             def_grade_idx = grade_opts.index(defaults.get('grade')) if defaults.get('grade') in grade_opts else 0
-            grade = c1.selectbox("학년", grade_opts, index=def_grade_idx, key="tt_grade")
+            grade = c1.selectbox("학년", grade_opts, index=def_grade_idx, key="tt_grade", on_change=update_prefs)
             
             sem_opts = ["1학기", "2학기"]
             def_sem_idx = sem_opts.index(defaults.get('semester')) if defaults.get('semester') in sem_opts else 0
-            semester = c2.selectbox("학기", sem_opts, index=def_sem_idx, key="tt_semester")
+            semester = c2.selectbox("학기", sem_opts, index=def_sem_idx, key="tt_semester", on_change=update_prefs)
             
-            target_credit = st.number_input("목표 학점", 9, 24, defaults.get('target_credit', 18), key="tt_credit")
+            target_credit = st.number_input("목표 학점", 9, 24, defaults.get('target_credit', 18), key="tt_credit", on_change=update_prefs)
             
-            # [수정] 성적/진단 결과 반영 체크박스 제거 -> 멀티 셀렉트로 대체
             # 재수강 후보군 불러오기
             candidate_subjects = st.session_state.get("retake_candidates", [])
             
@@ -966,10 +958,11 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 options=candidate_subjects,
                 default=candidate_subjects, # 기본적으로 다 선택
                 key="tt_must_include",
-                help="성적 진단에서 C+ 이하로 식별된 과목들입니다. 이번 학기에 재수강할 과목을 체크하세요."
+                help="성적 진단에서 C+ 이하로 식별된 과목들입니다. 이번 학기에 재수강할 과목을 체크하세요.",
+                on_change=update_prefs # 멀티셀렉트도 저장
             )
             
-            requirements = st.text_area("추가 요구사항", value=defaults.get('requirements', ''), placeholder="예: 전공 필수 챙겨줘", key="tt_req")
+            requirements = st.text_area("추가 요구사항", value=defaults.get('requirements', ''), placeholder="예: 전공 필수 챙겨줘", key="tt_req", on_change=update_prefs)
 
         with col2:
             st.markdown("#### 2️⃣ 공강 시간 설정")
@@ -981,7 +974,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             }
             schedule_index = [f"{k} ({v})" for k, v in kw_times.items()]
             
-            # [수정] 공강 설정 복원
+            # 공강 설정 복원 (Editor는 key가 있으면 자동 세션 저장되지만, 명시적 관리를 위해)
             if 'init_schedule_df' not in st.session_state:
                 if 'schedule_df' in defaults and defaults['schedule_df']:
                     try:
@@ -991,6 +984,8 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 else:
                     st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
 
+            # DataEditor는 on_change를 직접 지원하지 않거나 불안정할 수 있어, 
+            # 버튼 클릭 시점에 저장하는 방식을 유지하되, key를 통해 세션 상태는 자동 유지됨.
             edited_schedule = st.data_editor(
                 st.session_state.init_schedule_df,
                 column_config={
@@ -1006,18 +1001,8 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             )
 
         if st.button("시간표 생성하기 ✨", type="primary", use_container_width=True):
-            # [추가] 사용자 설정 저장 (Persistence)
-            current_prefs = {
-                "major": major,
-                "grade": grade,
-                "semester": semester,
-                "target_credit": target_credit,
-                "requirements": requirements,
-                "schedule_df": edited_schedule # DataEditor 결과는 바로 DataFrame
-            }
-            st.session_state.user_prefs = current_prefs
-            if st.session_state.user:
-                fb_manager.save_user_prefs(current_prefs)
+            # [추가] 실행 시점에도 한번 더 저장 (DataEditor 변경사항 반영)
+            update_prefs()
 
             blocked_times = []
             for day in ["월", "화", "수", "목", "금"]:
@@ -1026,9 +1011,11 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                         blocked_times.append(f"{day}요일 {period_label}")
             blocked_desc = ", ".join(blocked_times) if blocked_times else "없음"
             
+            # 기이수 과목 리스트 (필터용)
+            completed_list = st.session_state.get("completed_subjects", [])
+
             with st.spinner("선수과목 확인 및 시간표 조합 중... (최대 1분 소요될 수 있습니다)"):
-                # [수정] generate_timetable_ai 호출 시 must_include 전달
-                result = generate_timetable_ai(major, grade, semester, target_credit, blocked_desc, requirements, must_include)
+                result = generate_timetable_ai(major, grade, semester, target_credit, blocked_desc, requirements, must_include, completed_list)
                 st.session_state.timetable_result = result
                 st.session_state.timetable_chat_history = []
                 # 새로 생성했으므로 메타데이터 초기화 (저장 전)
@@ -1097,23 +1084,39 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
                 if st.button("진단 결과 불러오기"):
                     st.session_state.graduation_analysis_result = selected_diag['result']
                     
-                    # [추가] 재수강 태그 파싱 및 세션 저장 (Re-parsing with Fallback)
+                    # [추가] 태그 파싱 및 세션 저장 (Re-parsing)
+                    # 1. Retake
+                    match_retake = re.search(r"\[\[RETAKE: (.*?)\]\]", selected_diag['result'])
                     candidates = []
-                    # 1차 시도: 태그 검색
-                    match = re.search(r"\[\[RETAKE: (.*?)\]\]", selected_diag['result'])
-                    if match:
-                        retake_str = match.group(1).strip()
+                    if match_retake:
+                        retake_str = match_retake.group(1).strip()
                         if retake_str and retake_str != "NONE":
                             candidates = [x.strip() for x in retake_str.split(',')]
                     
-                    # 2차 시도: 태그가 없거나 비어있으면 텍스트 패턴 검색 (구버전 데이터 호환)
+                    # Fallback: 태그 없으면 텍스트 패턴 검색 (구버전 호환)
                     if not candidates:
-                        # 패턴: 과목명 (학점) -> C+, C0, D+, D0, F, NP
                         found = re.findall(r"([가-힣A-Za-z0-9]+)\s*\((C\+|C0|D\+|D0|F|NP)\)", selected_diag['result'])
                         if found:
                             candidates = list(set([m[0] for m in found]))
                     
                     st.session_state.retake_candidates = candidates
+
+                    # 2. Completed
+                    match_completed = re.search(r"\[\[COMPLETED: (.*?)\]\]", selected_diag['result'])
+                    completed_list = []
+                    if match_completed:
+                        comp_str = match_completed.group(1).strip()
+                        if comp_str and comp_str != "NONE":
+                            completed_list = [x.strip() for x in comp_str.split(',')]
+                    
+                    # Fallback: 태그 없으면 전체에서 A~C0 등 찾기
+                    if not completed_list:
+                         # 간단한 패턴 매칭 시도 (정확도 낮을 수 있음)
+                         found_comp = re.findall(r"([가-힣A-Za-z0-9]+)\s*\((A\+|A0|B\+|B0|C\+|C0|P)\)", selected_diag['result'])
+                         if found_comp:
+                             completed_list = list(set([m[0] for m in found_comp]))
+
+                    st.session_state.completed_subjects = completed_list
                     
                     st.success("진단 결과를 불러왔습니다! 스마트 시간표 탭에서 재수강 과목을 확인할 수 있습니다.")
                     st.rerun()

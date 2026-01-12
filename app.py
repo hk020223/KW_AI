@@ -681,6 +681,21 @@ if st.session_state.current_menu == "🤖 AI 학사 지식인":
 elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
     st.subheader("📅 AI 맞춤형 시간표 설계")
     
+    # [수정] 탭 이동 간 데이터 유지를 위한 세션 동기화 (화면 그리기 전 강제 주입)
+    if st.session_state.user_prefs:
+        prefs = st.session_state.user_prefs
+        # 위젯 key에 값이 아직 없거나 초기화된 경우 복원
+        if "tt_major" not in st.session_state and "major" in prefs:
+            st.session_state.tt_major = prefs["major"]
+        if "tt_grade" not in st.session_state and "grade" in prefs:
+            st.session_state.tt_grade = prefs["grade"]
+        if "tt_semester" not in st.session_state and "semester" in prefs:
+            st.session_state.tt_semester = prefs["semester"]
+        if "tt_credit" not in st.session_state and "target_credit" in prefs:
+            st.session_state.tt_credit = prefs["target_credit"]
+        if "tt_req" not in st.session_state and "requirements" in prefs:
+            st.session_state.tt_req = prefs["requirements"]
+
     # [시간표 불러오기 및 관리 섹션 (UI 개편)]
     if st.session_state.user and fb_manager.is_initialized:
         saved_tables = fb_manager.load_collection('timetables')
@@ -1082,15 +1097,23 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
                 if st.button("진단 결과 불러오기"):
                     st.session_state.graduation_analysis_result = selected_diag['result']
                     
-                    # [추가] 재수강 태그 파싱 및 세션 저장 (Re-parsing)
+                    # [추가] 재수강 태그 파싱 및 세션 저장 (Re-parsing with Fallback)
+                    candidates = []
+                    # 1차 시도: 태그 검색
                     match = re.search(r"\[\[RETAKE: (.*?)\]\]", selected_diag['result'])
                     if match:
                         retake_str = match.group(1).strip()
                         if retake_str and retake_str != "NONE":
                             candidates = [x.strip() for x in retake_str.split(',')]
-                            st.session_state.retake_candidates = candidates
-                        else:
-                            st.session_state.retake_candidates = []
+                    
+                    # 2차 시도: 태그가 없거나 비어있으면 텍스트 패턴 검색 (구버전 데이터 호환)
+                    if not candidates:
+                        # 패턴: 과목명 (학점) -> C+, C0, D+, D0, F, NP
+                        found = re.findall(r"([가-힣A-Za-z0-9]+)\s*\((C\+|C0|D\+|D0|F|NP)\)", selected_diag['result'])
+                        if found:
+                            candidates = list(set([m[0] for m in found]))
+                    
+                    st.session_state.retake_candidates = candidates
                     
                     st.success("진단 결과를 불러왔습니다! 스마트 시간표 탭에서 재수강 과목을 확인할 수 있습니다.")
                     st.rerun()

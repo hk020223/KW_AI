@@ -360,10 +360,15 @@ COMMON_TIMETABLE_INSTRUCTION = """
 4. **선수과목 체크리스트**: 맨 마지막에 `[⚠️ 선수과목 체크리스트]` 섹션을 만들어라.
 """
 
-# [수정] generate_timetable_ai 함수 (기이수 리스트 반영)
+# [수정] generate_timetable_ai 함수 (오류 해결: 리스트->문자열 변환)
 def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_desc, requirements, must_include_subjects, completed_subjects):
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
+    
+    # [수정] 템플릿에 넣기 전 문자열 변환 (ValueError 방지)
+    must_include_str = ", ".join(must_include_subjects) if must_include_subjects else "없음"
+    completed_str = ", ".join(completed_subjects) if completed_subjects else "없음"
+
     def _execute():
         base_template = """
         너는 대학교 수강신청 전문가야. 오직 제공된 [학습된 문서]의 텍스트 데이터와 [수강신청 자료집]에 기반해서만 시간표를 짜줘.
@@ -376,8 +381,8 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
         - 추가요구: {requirements}
         
         [★★★ 이수 내역 및 재수강 정보 (Input Data) ★★★]
-        1. **기이수 과목 (제외 대상):** {', '.join(completed_subjects) if completed_subjects else "없음"}
-        2. **필수 포함 과목 (재수강):** {', '.join(must_include_subjects) if must_include_subjects else "없음"}
+        1. **기이수 과목 (제외 대상):** {completed_str}
+        2. **필수 포함 과목 (재수강):** {must_include_str}
         """
         
         base_template += COMMON_TIMETABLE_INSTRUCTION + """
@@ -389,7 +394,10 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
         {context}
         """
         
-        prompt = PromptTemplate(template=base_template, input_variables=["context", "major", "grade", "semester", "target_credits", "blocked_times", "requirements"])
+        prompt = PromptTemplate(
+            template=base_template, 
+            input_variables=["context", "major", "grade", "semester", "target_credits", "blocked_times", "requirements", "completed_str", "must_include_str"]
+        )
         chain = prompt | llm
         
         input_data = {
@@ -399,7 +407,9 @@ def generate_timetable_ai(major, grade, semester, target_credits, blocked_times_
             "semester": semester,
             "target_credits": target_credits,
             "blocked_times": blocked_times_desc,
-            "requirements": requirements
+            "requirements": requirements,
+            "completed_str": completed_str,
+            "must_include_str": must_include_str
         }
         return chain.invoke(input_data).content
 
@@ -970,18 +980,18 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             }
             schedule_index = [f"{k} ({v})" for k, v in kw_times.items()]
             
-            # 공강 설정 복원 (Editor는 key가 있으면 자동 세션 저장되지만, 명시적 관리를 위해)
+            # [수정] 공강 설정 복원 (기본값 True 고정)
             if 'init_schedule_df' not in st.session_state:
                 if 'schedule_df' in defaults and defaults['schedule_df']:
                     try:
                         st.session_state.init_schedule_df = pd.DataFrame(defaults['schedule_df'], index=schedule_index, columns=["월", "화", "수", "목", "금"])
                     except:
+                        # 저장된 값이 없거나 깨진 경우: 기본값 True (전체 선택)
                         st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
                 else:
+                    # 기본값 True (전체 선택)
                     st.session_state.init_schedule_df = pd.DataFrame(True, index=schedule_index, columns=["월", "화", "수", "목", "금"])
 
-            # DataEditor는 on_change를 직접 지원하지 않거나 불안정할 수 있어, 
-            # 버튼 클릭 시점에 저장하는 방식을 유지하되, key를 통해 세션 상태는 자동 유지됨.
             edited_schedule = st.data_editor(
                 st.session_state.init_schedule_df,
                 column_config={

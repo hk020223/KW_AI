@@ -350,7 +350,7 @@ def render_interactive_timetable(schedule_list):
     html += "</table>"
     return html
 
-# 3. AI 후보군 추출 (엄격한 데이터 파싱 - 주관 배제)
+# 3. AI 후보군 추출 (분반 추가 및 MSC 필수 로직 적용)
 def get_course_candidates_json(major, grade, semester, diagnosis_text=""):
     llm = get_llm()
     if not llm: return []
@@ -768,7 +768,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 def draw_course_row(course, key_prefix):
                     # [필터 로직] 이미 담은 과목은 목록에서 그리지 않음 (자동 숨김)
                     current_names = [c['name'] for c in st.session_state.my_schedule]
-                    # 단순 이름 비교. 분반 달라도 같은 과목이면 하나만 담는 것이 보통이므로 유지.
+                    # 분반이 달라도 같은 과목명을 중복해서 듣는 경우는 드물므로 이름 기준 필터 유지
                     if course['name'] in current_names:
                         return 
 
@@ -789,7 +789,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                         
                         with c_info:
                             time_str = ', '.join(course['time_slots']) if course['time_slots'] else "시간미정"
-                            # [분반] 정보 표시
+                            # [수정] 분반(division) 정보 표시
                             division_str = f"<span style='color:#007bff; font-weight:bold;'>[{course.get('division', '분반미정')}]</span>"
                             
                             info_html = f"""

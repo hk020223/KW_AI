@@ -1,4 +1,3 @@
-1/13 21:30 
 import streamlit as st
 import pandas as pd
 import os
@@ -974,4 +973,5 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+
 

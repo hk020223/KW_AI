@@ -274,14 +274,50 @@ def get_pro_llm():
     if not api_key: return None
     return ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-09-2025", temperature=0)
 
+# [수정된 AI 질문 함수: 대화 히스토리 기억 기능 추가]
 def ask_ai(question):
     llm = get_llm()
     if not llm: return "⚠️ API Key 오류"
+
+    # 1. 현재 세션에 저장된 대화 기록을 문자열로 변환
+    history_context = ""
+    if "chat_history" in st.session_state:
+        # 최근 10개 대화만 가져오기 (토큰 절약 및 최신 맥락 유지)
+        recent_history = st.session_state.chat_history[-10:]
+        for msg in recent_history:
+            role = "사용자" if msg["role"] == "user" else "AI"
+            history_context += f"{role}: {msg['content']}\n"
+
     def _execute():
-        chain = PromptTemplate.from_template(
-            "문서 내용: {context}\n질문: {question}\n문서에 기반해 답변해줘. 답변할 때 근거가 되는 문서의 원문 내용을 반드시 \" \" (쌍따옴표) 안에 인용해서 포함해줘."
-        ) | llm
-        return chain.invoke({"context": PRE_LEARNED_DATA, "question": question}).content
+        # 2. 프롬프트에 '이전 대화 내역' 섹션 추가
+        template = """
+        너는 광운대학교 학사 정보를 안내하는 AI 조교야.
+        아래 [문서 내용]과 [이전 대화 내역]을 바탕으로, [현재 질문]에 답변해줘.
+
+        [이전 대화 내역]
+        (이 내용을 통해 사용자가 어떤 맥락(학년, 학기 등)에서 질문하는지 파악해라)
+        {history}
+
+        [문서 내용]
+        {context}
+
+        [현재 질문]
+        {question}
+
+        [답변 가이드]
+        1. 이전 대화의 맥락이 있다면 그 설정을 유지해서 답변해. (예: 사용자가 '2학기'를 언급했다면 계속 2학기 기준으로 답해)
+        2. 문서에 있는 내용만 근거로 답변하고, 근거 문장을 " " 안에 인용해줘.
+        """
+        prompt = PromptTemplate(template=template, input_variables=["history", "context", "question"])
+        chain = prompt | llm
+        
+        # 3. 히스토리, 문서, 질문을 한꺼번에 전달
+        return chain.invoke({
+            "history": history_context,
+            "context": PRE_LEARNED_DATA, 
+            "question": question
+        }).content
+
     try:
         return run_with_retry(_execute)
     except Exception as e:
@@ -973,5 +1009,6 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+
 
 

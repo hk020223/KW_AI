@@ -778,9 +778,26 @@ with st.sidebar:
     else:
         st.error("⚠️ 데이터 폴더에 PDF 파일이 없습니다.")
 
-# 메뉴 구성
-menu = st.radio("기능 선택", ["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"], 
-                horizontal=True, key="menu_radio")
+# -----------------------------------------------------------------------------
+# [2] UI 구성 (디자인 적용됨)
+# -----------------------------------------------------------------------------
+
+# 1. 상단 헤더 (중앙 정렬 타이틀)
+st.markdown("<h1 style='text-align: center; color: #8A1538;'>🦄 Kwangwoon AI Planner</h1>", unsafe_allow_html=True)
+st.markdown("<h5 style='text-align: center; color: #666;'>광운대학교 학생을 위한 지능형 수강설계 에이전트</h5>", unsafe_allow_html=True)
+st.write("") 
+
+# 2. 기능 선택 메뉴 (중앙 정렬 라디오 버튼)
+_, col_center, _ = st.columns([1, 4, 1])
+with col_center:
+    menu = st.radio(
+        "메뉴 선택", # 라벨 숨김 처리됨
+        options=["🤖 AI 학사 지식인", "📅 스마트 시간표(수정가능)", "📈 성적 및 진로 진단"],
+        index=0,
+        horizontal=True,
+        key="menu_radio",
+        label_visibility="collapsed"
+    )
 
 if menu != st.session_state.current_menu:
     st.session_state.current_menu = menu
@@ -1101,6 +1118,7 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+
 
 
 

@@ -1,3 +1,4 @@
+1/13 21:30 
 import streamlit as st
 import pandas as pd
 import os
@@ -350,12 +351,12 @@ def render_interactive_timetable(schedule_list):
     html += "</table>"
     return html
 
-# 3. AI 후보군 추출 (분반 추가 및 MSC 필수 로직 적용)
+# 3. AI 후보군 추출 (엄격한 데이터 파싱 - 주관 배제)
 def get_course_candidates_json(major, grade, semester, diagnosis_text=""):
     llm = get_llm()
     if not llm: return []
 
-    # [수정됨] 분반(division) 추가 및 MSC/필수 로직 강화
+    # [수정] Career/Recommendation 배제 및 전수 조사 중심 프롬프트
     prompt_template = """
     너는 [대학교 학사 데이터베이스 파서]이다. 
     제공된 [수강신청자료집/시간표 문서]를 분석하여 **{major} {grade} {semester}** 학생이 수강 가능한 **모든 정규 개설 과목**을 JSON 리스트로 추출하라.
@@ -368,30 +369,21 @@ def get_course_candidates_json(major, grade, semester, diagnosis_text=""):
     {diagnosis_context}
     
     [엄격한 제약 사항]
-    1. **주관적 추천 금지:** 팩트 기반 데이터만 추출하라.
-    2. **전수 조사:** 해당 학과/학년/학기에 배정된 과목은 하나도 빠뜨리지 말고 모두 포함하라. 
-       - **중요:** 같은 과목이라도 **분반(Division)**이 다르면 별도 항목으로 모두 출력하라. (예: A반, B반)
+    1. **주관적 추천 금지:** "취업에 유리함", "커리어 도움됨" 같은 추측성 설명은 절대 하지 마라.
+    2. **전수 조사:** 해당 학과/학년/학기에 배정된 과목은 하나도 빠뜨리지 말고 모두 포함하라. (분반이 다르면 모두 포함)
     3. **제외 대상:** 타 학과 전용 과목, 해당 학년 대상이 아닌 과목은 리스트에서 제외하라.
-    4. **Reason 필드 작성 규칙:** "이수구분 | 학점" 형식으로 적되, 재수강 과목이면 "재수강 필수"를 명시하라.
-    
-    5. **Priority 설정 규칙 (탭 분류 기준):**
-       - **"High" (필수/재수강/MSC필수):**
-         1. 전공필수 과목
-         2. [진단 결과]에 명시된 재수강 필요 과목
-         3. **MSC(기초교양) 필수:** 해당 학과/학년(학번 기준)에서 반드시 들어야 하는 수학/과학/전산 필수 과목 (예: 공대의 경우 대학수학, 대학물리 등).
-       - **"Medium" (전공선택):**
-         1. 전공선택 과목
-       - **"Normal" (교양/기타):**
-         1. 교양필수/선택 (MSC 과목 중 해당 학과/학년의 필수 요건이 아닌 경우 포함)
-         2. 기타 일반선택 과목
-         3. **주의:** MSC 과목이더라도 이 학생(학과/학년)에게 필수가 아니면 Normal로 분류하라.
+    4. **Reason 필드 작성 규칙:** - 기본적으로 **"이수구분(전공필수/선택/교양) | 학점"** 형식의 팩트만 적어라.
+       - 단, [진단 결과]에 "재수강"이 명시된 과목은 **"재수강 필수 대상"**이라고 적어라.
+    5. **Priority 설정:**
+       - 전공필수 또는 재수강 과목 = "High"
+       - 전공선택 = "Medium"
+       - 교양/기타 = "Normal"
     
     [JSON 출력 포맷 예시]
     [
         {{
             "id": "unique_id_1",
             "name": "회로이론1",
-            "division": "A반",
             "professor": "김광운",
             "credits": 3,
             "time_slots": ["월3", "수4"],
@@ -402,7 +394,6 @@ def get_course_candidates_json(major, grade, semester, diagnosis_text=""):
          {{
             "id": "unique_id_2",
             "name": "대학영어",
-            "division": "C반",
             "professor": "Smith",
             "credits": 2,
             "time_slots": ["화1", "목1"],
@@ -639,7 +630,7 @@ with st.sidebar:
         progress_bar.progress(100)
         st.success("✅ 동기화 완료! 최신 데이터(2026-01-12 14:30 기준)가 반영되었습니다.")
         time.sleep(2)
-        st.rerun()          
+        st.rerun()         
     st.divider()
     st.caption("클릭하면 해당 화면으로 이동합니다.")
     log_container = st.container(height=300)
@@ -740,7 +731,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                      diag_text = saved_diags[0]['result']
                      st.toast("저장된 진단 결과를 불러왔습니다.")
 
-            with st.spinner("요람에서 해당 학기 개설 과목을 전수 조사 중입니다... (분반 및 필수 체크)"):
+            with st.spinner("요람에서 해당 학기 개설 과목을 전수 조사 중입니다..."):
                 candidates = get_course_candidates_json(major, grade, semester, diag_text)
                 if candidates:
                     st.session_state.candidate_courses = candidates
@@ -762,40 +753,35 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
             st.caption("담은 과목은 목록에서 자동으로 사라집니다.")
             
             with st.container(height=600, border=True):
-                tab1, tab2, tab3 = st.tabs(["🔥 필수/재수강/MSC", "🏫 전공선택", "🧩 교양/기타"])
+                tab1, tab2, tab3 = st.tabs(["🔥 필수/재수강", "🏫 전공선택", "🧩 교양/기타"])
                 
                 # [UI 컴포넌트] 인사이트 컴팩트 로우 (Insight Compact Row)
                 def draw_course_row(course, key_prefix):
                     # [필터 로직] 이미 담은 과목은 목록에서 그리지 않음 (자동 숨김)
                     current_names = [c['name'] for c in st.session_state.my_schedule]
-                    # 분반이 달라도 같은 과목명을 중복해서 듣는 경우는 드물므로 이름 기준 필터 유지
                     if course['name'] in current_names:
-                        return 
+                        return # Skip rendering
 
                     # Highlight Logic
                     priority = course.get('priority', 'Normal')
                     border_color = "#ddd"
-                    reason_bg = "#f1f3f5" 
+                    reason_bg = "#f1f3f5" # 기본 회색
                     
                     if priority == 'High': 
                         border_color = "#ffcccc" # 붉은 테두리
-                        reason_bg = "#ffebee" 
+                        reason_bg = "#ffebee" # 붉은 배경 (이유)
                     elif priority == 'Medium':
                         border_color = "#cce5ff" # 파란 테두리
-                        reason_bg = "#e3f2fd" 
+                        reason_bg = "#e3f2fd" # 파란 배경
                     
                     with st.container(border=True):
                         c_info, c_btn = st.columns([0.85, 0.15])
                         
                         with c_info:
                             time_str = ', '.join(course['time_slots']) if course['time_slots'] else "시간미정"
-                            # [수정] 분반(division) 정보 표시
-                            division_str = f"<span style='color:#007bff; font-weight:bold;'>[{course.get('division', '분반미정')}]</span>"
-                            
                             info_html = f"""
                             <div style="line-height:1.2;">
-                                <span style="font-weight:bold; font-size:16px;">{course['name']}</span> {division_str}
-                                <br>
+                                <span style="font-weight:bold; font-size:16px;">{course['name']}</span> 
                                 <span style="font-size:13px; color:#555;">({course['credits']}학점) | {course['professor']} | {time_str}</span>
                             </div>
                             """
@@ -812,9 +798,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
 
                         with c_btn:
                             st.write("") 
-                            # 유니크 ID 생성 (ID가 없으면 이름+분반)
-                            unique_key = course.get('id', f"{course['name']}_{course.get('division', '0')}")
-                            if st.button("➕", key=f"ad_{key_prefix}_{unique_key}", type="primary", help="담기"):
+                            if st.button("➕", key=f"ad_{key_prefix}_{course['id']}", type="primary", help="담기"):
                                 conflict, conflict_name = check_time_conflict(course, st.session_state.my_schedule)
                                 if conflict:
                                     st.toast(f"⚠️ 시간 충돌! '{conflict_name}' 수업과 겹칩니다.", icon="🚫")
@@ -823,19 +807,18 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                                     st.rerun()
 
                 # 분류 및 렌더링
-                # Prompt에서 priority를 High(필수/MSC필수), Medium(전공선택), Normal(교양/기타)로 분류함
                 must_list = [c for c in st.session_state.candidate_courses if c.get('priority') == 'High']
-                major_list = [c for c in st.session_state.candidate_courses if c.get('priority') == 'Medium']
+                major_list = [c for c in st.session_state.candidate_courses if c.get('priority') == 'Medium' or ('전공' in c.get('classification', '') and c not in must_list)]
                 other_list = [c for c in st.session_state.candidate_courses if c not in must_list and c not in major_list]
 
                 with tab1:
-                    if not must_list: st.info("필수/재수강/필수MSC 과목이 없습니다.")
+                    if not must_list: st.info("해당 과목 없음")
                     for c in must_list: draw_course_row(c, "must")
                 with tab2:
-                    if not major_list: st.info("전공선택 과목이 없습니다.")
+                    if not major_list: st.info("해당 과목 없음")
                     for c in major_list: draw_course_row(c, "mj")
                 with tab3:
-                    if not other_list: st.info("교양/기타 과목이 없습니다.")
+                    if not other_list: st.info("해당 과목 없음")
                     for c in other_list: draw_course_row(c, "ot")
 
         # [우측] 실시간 프리뷰
@@ -847,8 +830,7 @@ elif st.session_state.current_menu == "📅 스마트 시간표(수정가능)":
                 with st.expander("📋 신청 내역 관리 (클릭하여 삭제)", expanded=True):
                     for idx, added_course in enumerate(st.session_state.my_schedule):
                         cols = st.columns([0.8, 0.2])
-                        div_txt = f"[{added_course.get('division', '')}]" if added_course.get('division') else ""
-                        cols[0].markdown(f"**{added_course['name']}** {div_txt} ({added_course['professor']})")
+                        cols[0].markdown(f"**{added_course['name']}** ({added_course['professor']})")
                         if cols[1].button("❌", key=f"del_list_{idx}"):
                              st.session_state.my_schedule.pop(idx)
                              st.rerun()
@@ -992,3 +974,4 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+

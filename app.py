@@ -495,7 +495,7 @@ def get_course_candidates_json(major, grade, semester, diagnosis_text=""):
     1. **Priority: High (긴급/필수)**
        - [진단 결과] 텍스트에 "재수강"이 필요하다고 명시된 과목 (최우선 순위). Reason에 "⚠️ 재수강 필수"라고 적을 것.
        - 해당 학년/학기의 **전공 필수(Major Required)** 과목.
-       - (1학년일 경우) 대학영어, 대학수학, 화학, 물리학, 사고와표현(광운인되기) 등 **MSC/기초교양 필수** 과목.
+       - 해당 학년/학기의 **MSC/기초교양 필수** 과목.
     
     2. **Priority: Medium (전공 선택)**
        - 위 'High'에 속하지 않는 모든 **전공 선택(Major Elective)** 과목.
@@ -1153,3 +1153,4 @@ elif st.session_state.current_menu == "📈 성적 및 진로 진단":
             st.session_state.graduation_analysis_result = ""
             st.session_state.graduation_chat_history = []
             st.rerun()
+
